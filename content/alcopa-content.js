@@ -148,6 +148,8 @@ function extractDetailPageData() {
     year: null,
     co2: null,
     engineSize: null,
+    type: null,        // Type de véhicule (UTILITAIRES, etc.)
+    carrosserie: null, // Carrosserie (CTTE, etc.)
     alcopa_url: window.location.href
   };
 
@@ -190,6 +192,16 @@ function extractDetailPageData() {
         data.energyType = value;
       } else if (label.includes('numéro de série') || label.includes('immatriculation')) {
         data.vin = value;
+      } else if (label.includes('boite de vitesse') || label.includes('boîte de vitesse')) {
+        data.transmission = value;
+      } else if (label === 'type') {
+        data.type = value;
+      } else if (label.includes('carrosserie')) {
+        data.carrosserie = value;
+      } else if (label.includes('cylindrée') || label.includes('cylindree')) {
+        data.engineSize = value;
+      } else if (label.includes('co2')) {
+        data.co2 = value;
       }
     }
   });

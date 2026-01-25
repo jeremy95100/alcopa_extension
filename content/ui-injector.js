@@ -120,6 +120,15 @@ async function handleIconClick(event) {
   console.log('Icon clicked:', source);
   console.log('Vehicle data:', vehicleData);
 
+  if (source === 'leboncoin') {
+    // Ouvrir directement LeBonCoin avec les filtres
+    const url = buildLeBonCoinUrl(vehicleData);
+    console.log('Opening LeBonCoin URL:', url);
+    window.open(url, '_blank');
+    return;
+  }
+
+  // Pour La Centrale, garder l'ancien comportement (scraping)
   // Show loading state
   button.classList.add('loading');
   button.disabled = true;
@@ -175,6 +184,363 @@ async function handleIconClick(event) {
       button.classList.remove('success', 'error');
     }, 3000);
   }
+}
+
+// Construire l'URL LeBonCoin avec les filtres
+function buildLeBonCoinUrl(vehicleData) {
+  const params = new URLSearchParams();
+
+  // Catégorie : 2 = Voitures
+  params.set('category', '2');
+
+  // Année : ± 2 ans (format: min-max)
+  if (vehicleData.year) {
+    const yearMin = vehicleData.year - 2;
+    const yearMax = vehicleData.year + 2;
+    params.set('regdate', `${yearMin}-${yearMax}`);
+  }
+
+  // Kilométrage : ± 20 000 km (format: min-max)
+  if (vehicleData.mileage) {
+    const kmMin = Math.max(0, vehicleData.mileage - 20000);
+    const kmMax = vehicleData.mileage + 20000;
+    params.set('mileage', `${kmMin}-${kmMax}`);
+  }
+
+  // Puissance DIN : extraite de la finition (format: min-max avec +1)
+  const horsePower = extractHorsePowerFromFinition(vehicleData.finition);
+  if (horsePower) {
+    params.set('horse_power_din', `${horsePower}-${horsePower + 1}`);
+  }
+
+  // Marque (format: MARQUE en majuscules)
+  if (vehicleData.brand) {
+    const brandUpper = vehicleData.brand.toUpperCase();
+    params.set('u_car_brand', brandUpper);
+  }
+
+  // Modèle (format: MARQUE_Modele)
+  if (vehicleData.brand && vehicleData.model) {
+    const brandUpper = vehicleData.brand.toUpperCase();
+    // Prendre le premier mot du modèle et capitaliser
+    const modelWords = vehicleData.model.split(/\s+/);
+    const modelName = modelWords[0].charAt(0).toUpperCase() + modelWords[0].slice(1).toLowerCase();
+    params.set('u_car_model', `${brandUpper}_${modelName}`);
+  }
+
+  // Énergie : mapper Alcopa vers LeBonCoin
+  const fuelCode = mapEnergyToLeBonCoin(vehicleData.energyType);
+  if (fuelCode) {
+    params.set('fuel', fuelCode);
+  }
+
+  // Boîte de vitesse
+  const gearboxCode = mapGearboxToLeBonCoin(vehicleData.transmission);
+  if (gearboxCode) {
+    params.set('gearbox', gearboxCode);
+  }
+
+  // Type de véhicule : détecté depuis la finition/modèle Alcopa
+  const vehicleType = detectVehicleType(vehicleData.model, vehicleData.finition);
+  if (vehicleType) {
+    params.set('vehicle_type', vehicleType);
+  }
+
+  // Texte de recherche : Modèle + exclusions des versions absentes de la finition
+  // Exclure ESTATE, SW, BREAK etc. si non présent dans la finition Alcopa
+  // pour éviter les faux résultats (ex: CLIO IV vs CLIO IV ESTATE)
+  if (vehicleData.model) {
+    const searchText = buildSearchTextFromFinition(vehicleData.model, vehicleData.finition);
+    params.set('text', searchText);
+  }
+
+  return `https://www.leboncoin.fr/recherche?${params.toString()}`;
+}
+
+// Détecter le type de véhicule LeBonCoin depuis le modèle/finition Alcopa
+function detectVehicleType(model, finition) {
+  const modelUpper = (model || '').toUpperCase();
+  const finitionUpper = (finition || '').toUpperCase();
+  const combined = modelUpper + ' ' + finitionUpper;
+
+  // Mapping mots-clés Alcopa → type LeBonCoin
+  const typeMapping = [
+    // Break
+    { keywords: ['ESTATE', 'SW', 'BREAK', 'TOURING', 'AVANT', 'SPORTWAGON', 'ALLTRACK', 'ALLROAD'], type: 'break' },
+    // SUV / 4x4
+    { keywords: ['SUV', 'CROSSOVER', '4X4', 'CROSSBACK', 'SPORTBACK', 'QASHQAI', 'TUCSON', 'TIGUAN', 'CAPTUR', 'JUKE', '3008', '5008', '2008', 'KADJAR', 'ATECA', 'KAROQ', 'KODIAQ', 'T-ROC', 'TARRACO', 'KUGA', 'MOKKA', 'GRANDLAND'], type: 'suv' },
+    // Cabriolet
+    { keywords: ['CABRIOLET', 'CONVERTIBLE', 'ROADSTER', 'SPIDER', 'SPYDER'], type: 'cabriolet' },
+    // Coupé
+    { keywords: ['COUPE', 'COUPÉ'], type: 'coupe' },
+    // Monospace
+    { keywords: ['MONOSPACE', 'PICASSO', 'SPACETOURER', 'SCENIC', 'TOURAN', 'SHARAN', 'ALHAMBRA', 'GALAXY', 'S-MAX', 'ZAFIRA', 'C4 SPACE'], type: 'monospace' },
+    // Voiture société / commerciale
+    { keywords: ['SOCIETE', 'SOCIÉTÉ', 'COMMERCIALE', 'AFFAIRE'], type: 'voiture_societe' },
+  ];
+
+  for (const mapping of typeMapping) {
+    for (const keyword of mapping.keywords) {
+      if (combined.includes(keyword)) {
+        return mapping.type;
+      }
+    }
+  }
+
+  // Pas de type spécifique détecté → pas de filtre
+  return null;
+}
+
+// Construire le texte de recherche en comparant finition Alcopa vs titre LeBonCoin
+function buildSearchTextFromFinition(model, finition) {
+  const finitionUpper = (finition || '').toUpperCase();
+  const modelUpper = (model || '').toUpperCase();
+
+  // 1) Commencer avec le modèle
+  let searchText = model;
+
+  // 2) Extraire le nom de finition (trim level) depuis la finition Alcopa
+  // et l'ajouter pour cibler la bonne version
+  const trimName = extractTrimLevel(finitionUpper, modelUpper);
+  if (trimName) {
+    searchText += ` ${trimName}`;
+  }
+
+  // 3) Exclure les carrosseries absentes de la finition
+  const bodyKeywords = [
+    'ESTATE', 'SW', 'BREAK', 'TOURING', 'AVANT', 'ALLROAD', 'ALLTRACK',
+    'SPORTWAGON', 'SPORTBACK', 'CROSSBACK', 'CROSSOVER',
+    'CABRIOLET', 'CONVERTIBLE', 'COUPE',
+    'PICASSO', 'SPACETOURER', 'TOURER', 'SCENIC', 'COMBI', 'MONOSPACE',
+  ];
+
+  for (const keyword of bodyKeywords) {
+    if (!finitionUpper.includes(keyword)) {
+      searchText += ` -${keyword}`;
+    }
+  }
+
+  return searchText;
+}
+
+// Extraire le niveau de finition (trim level) de la finition Alcopa
+// Ex: "CLIO IV TCE 90 INTENS" → "INTENS"
+// Ex: "308 SW BLUEHDI 130 ALLURE" → "ALLURE"
+function extractTrimLevel(finitionUpper, modelUpper) {
+  // Liste des finitions connues (trim levels)
+  const knownTrims = [
+    // Renault / Dacia
+    'LIFE', 'ZEN', 'INTENS', 'INITIALE', 'BUSINESS', 'EXPRESSION',
+    'DYNAMIQUE', 'PRIVILEGE', 'BOSE', 'ICONIC', 'TECHNO', 'EQUILIBRE',
+    'EVOLUTION', 'CONFORT', 'AUTHENTIQUE', 'LAURÉATE', 'LAUREATE',
+    'STEPWAY', 'EXTREME', 'JOURNEY', 'ESSENTIAL',
+    // Peugeot
+    'ACTIVE', 'ALLURE', 'GT LINE', 'GT', 'FELINE', 'STYLE', 'ACCESS',
+    'LIKE', 'ROADTRIP',
+    // Citroën
+    'FEEL', 'SHINE', 'ORIGINS', 'C-SERIES', 'DRIVER', 'CLUB',
+    'CONFORT', 'LIVE', 'START', 'ATTRACTION',
+    // Volkswagen
+    'TRENDLINE', 'COMFORTLINE', 'HIGHLINE', 'CARAT',
+    // BMW
+    'LUXURY', 'LOUNGE', 'SPORT',
+    // Mercedes
+    'PROGRESSIVE', 'AVANTGARDE', 'FASCINATION', 'SENSATION', 'INSPIRATION',
+    // Ford
+    'TITANIUM', 'TREND', 'GHIA', 'VIGNALE', 'COOL',
+    // Toyota
+    'DYNAMIC', 'DESIGN', 'COLLECTION',
+    // Hyundai / Kia
+    'CREATIVE', 'EXECUTIVE', 'PREMIUM', 'MOTION',
+    // Génériques
+    'ELEGANCE', 'CLASSIC', 'EDITION', 'LIMITED', 'SIGNATURE',
+    'EXCLUSIVE', 'SELECT', 'ADVANCE', 'TECHNO',
+    // Finitions sport
+    'RS LINE', 'ST LINE', 'S LINE', 'M SPORT', 'AMG LINE', 'R LINE',
+    'GT PACK', 'FR', 'CUPRA', 'TYPE R', 'NISMO', 'GR SPORT',
+    'N LINE', 'GT SPORT',
+    // Finitions pro/société
+    'GRAND CONFORT', 'PRO', 'PACK PRO', 'AIR',
+  ];
+
+  // Chercher la finition dans la chaîne (du plus long au plus court pour matcher en priorité)
+  const sortedTrims = knownTrims.sort((a, b) => b.length - a.length);
+
+  for (const trim of sortedTrims) {
+    const trimUp = trim.toUpperCase();
+    // Vérifier que le trim est dans la finition mais pas dans le modèle
+    if (finitionUpper.includes(trimUp) && !modelUpper.includes(trimUp)) {
+      return trim;
+    }
+  }
+
+  return null;
+}
+
+// Extraire la puissance DIN de la finition Alcopa
+// La puissance est généralement un nombre entre 45 et 1000 CV
+function extractHorsePowerFromFinition(finition) {
+  if (!finition) return null;
+
+  // Chercher tous les nombres dans la finition
+  const numbers = finition.match(/\d+/g);
+  if (!numbers) return null;
+
+  // Filtrer pour garder seulement les nombres qui ressemblent à une puissance DIN (45-1000)
+  const validPowers = numbers
+    .map(n => parseInt(n))
+    .filter(n => n >= 45 && n <= 1000);
+
+  // Prendre le premier nombre valide trouvé (généralement la puissance)
+  // En excluant les nombres qui ressemblent à des cylindrées (1.5, 2.0 -> 15, 20)
+  for (const power of validPowers) {
+    // Exclure les petits nombres qui pourraient être des versions (E6, L1, etc.)
+    // et les nombres qui ressemblent à des cylindrées converties (15, 16, 18, 20, 22, 25, 30)
+    if (power >= 45) {
+      return power;
+    }
+  }
+
+  return null;
+}
+
+// Extraire le nom du moteur de la finition Alcopa
+function extractEngineFromFinition(finition) {
+  if (!finition) return null;
+
+  const finitionUpper = finition.toUpperCase();
+
+  // Patterns de moteurs courants
+  const enginePatterns = [
+    // PSA (Peugeot, Citroën, DS, Opel)
+    /BLUEHDI\s*\d+/i,
+    /PURETECH\s*\d+/i,
+    /HDI\s*\d+/i,
+    /E-HDI\s*\d+/i,
+    /THP\s*\d+/i,
+    /VTI\s*\d+/i,
+    // Renault, Dacia, Nissan
+    /DCI\s*\d+/i,
+    /BLUE\s*DCI\s*\d+/i,
+    /TCE\s*\d+/i,
+    /SCE\s*\d+/i,
+    // Volkswagen Group (VW, Audi, Seat, Skoda)
+    /TDI\s*\d+/i,
+    /TSI\s*\d+/i,
+    /TFSI\s*\d+/i,
+    /GTI/i,
+    /GTD/i,
+    // Fiat, Alfa Romeo, Jeep
+    /MULTIJET\s*\d*/i,
+    /MULTIAIR\s*\d*/i,
+    /JTDM?\s*\d+/i,
+    // Ford
+    /TDCI\s*\d+/i,
+    /ECOBOOST\s*\d*/i,
+    /ECOBLUE\s*\d*/i,
+    // Mercedes
+    /CDI\s*\d+/i,
+    /BLUETEC\s*\d*/i,
+    // BMW
+    /D\s*\d{3}/i,  // ex: D 150
+    /I\s*\d{3}/i,  // ex: I 150
+    // Toyota, Lexus
+    /D-4D\s*\d*/i,
+    /HYBRID\s*\d*/i,
+    // Hyundai, Kia
+    /CRDI\s*\d+/i,
+    /T-GDI\s*\d*/i,
+    // Iveco
+    /HI-MATIC/i,
+    /DAILY\s*\d+\.\d+/i,
+    // Générique - puissance en CV/CH
+    /\d+\s*CV/i,
+    /\d+\s*CH/i,
+  ];
+
+  for (const pattern of enginePatterns) {
+    const match = finitionUpper.match(pattern);
+    if (match) {
+      return match[0].trim();
+    }
+  }
+
+  return null;
+}
+
+// Détecter si c'est un utilitaire
+function isUtilitaireVehicle(vehicleData) {
+  const utilitaireKeywords = ['FOURGON', 'UTILITAIRE', 'CAMION', 'BENNE', 'PLATEAU', 'DAILY', 'MASTER', 'TRAFIC', 'BOXER', 'JUMPER', 'DUCATO', 'SPRINTER', 'CRAFTER', 'TRANSIT', 'VITO', 'EXPERT', 'JUMPY', 'PROACE'];
+
+  const modelUpper = (vehicleData.model || '').toUpperCase();
+  const finitionUpper = (vehicleData.finition || '').toUpperCase();
+  const typeUpper = (vehicleData.type || '').toUpperCase();
+
+  // Vérifier le type explicite
+  if (typeUpper.includes('UTILITAIRE')) {
+    return true;
+  }
+
+  // Vérifier les mots-clés dans le modèle ou la finition
+  return utilitaireKeywords.some(keyword =>
+    modelUpper.includes(keyword) || finitionUpper.includes(keyword)
+  );
+}
+
+// Construire le texte de recherche (Marque + Modèle simplifié)
+function buildSearchText(vehicleData) {
+  const brand = vehicleData.brand || '';
+  let model = vehicleData.model || '';
+
+  // Simplifier le modèle : prendre seulement le premier mot
+  // Ex: "DAILY FOURGON" -> "DAILY"
+  // Ex: "308 SW" -> "308"
+  const modelWords = model.split(/\s+/);
+  const simplifiedModel = modelWords[0] || '';
+
+  return `${brand} ${simplifiedModel}`.trim();
+}
+
+// Mapper les énergies Alcopa vers les codes LeBonCoin
+function mapEnergyToLeBonCoin(energyType) {
+  if (!energyType) return null;
+
+  const energyUpper = energyType.toUpperCase();
+
+  // Codes LeBonCoin : 1=Essence, 2=Diesel, 3=GPL, 4=Électrique, 6=Hybride
+  const mapping = {
+    'ESSENCE': '1',
+    'ES': '1',
+    'DIESEL': '2',
+    'GO': '2',        // Gasoil = Diesel
+    'GAZOLE': '2',
+    'GPL': '3',
+    'ELECTRIQUE': '4',
+    'ÉLECTRIQUE': '4',
+    'EL': '4',
+    'HYBRIDE': '6',
+    'HY': '6',
+    'EH': '6',        // Essence Hybride
+    'GH': '6',        // Gazole Hybride
+  };
+
+  return mapping[energyUpper] || null;
+}
+
+// Mapper les boîtes de vitesse Alcopa vers les codes LeBonCoin
+function mapGearboxToLeBonCoin(transmission) {
+  if (!transmission) return null;
+
+  const transUpper = transmission.toUpperCase();
+
+  // Codes LeBonCoin : 1=Manuelle, 2=Automatique
+  if (transUpper.includes('AUTO') || transUpper.includes('BVA') || transUpper.includes('ROBOTISÉE')) {
+    return '2';
+  } else if (transUpper.includes('MANUEL') || transUpper.includes('BVM')) {
+    return '1';
+  }
+
+  return null;
 }
 
 function showLoadingModal(source) {
