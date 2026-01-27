@@ -121,10 +121,13 @@ async function handleIconClick(event) {
   console.log('Vehicle data:', vehicleData);
 
   if (source === 'leboncoin') {
-    // Ouvrir directement LeBonCoin avec les filtres
-    const url = buildLeBonCoinUrl(vehicleData);
-    console.log('Opening LeBonCoin URL:', url);
-    window.open(url, '_blank');
+    // Ouvrir 2 onglets : recherche voitures filtrée + recherche globale
+    const filteredUrl = buildLeBonCoinUrl(vehicleData);
+    const generalUrl = buildLeBonCoinGeneralUrl(vehicleData);
+    console.log('Opening LeBonCoin filtered URL:', filteredUrl);
+    console.log('Opening LeBonCoin general URL:', generalUrl);
+    window.open(filteredUrl, '_blank');
+    window.open(generalUrl, '_blank');
     return;
   }
 
@@ -186,49 +189,76 @@ async function handleIconClick(event) {
   }
 }
 
-// Construire l'URL LeBonCoin avec les filtres
-function buildLeBonCoinUrl(vehicleData) {
+// Construire l'URL LeBonCoin recherche générale (toutes catégories, texte + filtres km/année)
+function buildLeBonCoinGeneralUrl(vehicleData) {
   const params = new URLSearchParams();
 
-  // Catégorie : 2 = Voitures
-  params.set('category', '2');
+  if (vehicleData.brand) {
+    let searchText;
+    if (vehicleData.finition) {
+      const finitionWords = vehicleData.finition.trim().split(/\s+/).slice(0, 10).join(' ');
+      searchText = `${vehicleData.brand} ${finitionWords}`;
+    } else if (vehicleData.model) {
+      searchText = `${vehicleData.brand} ${vehicleData.model}`;
+    } else {
+      searchText = vehicleData.brand;
+    }
+    params.set('text', searchText);
+  }
 
-  // Année : ± 2 ans (format: min-max)
+  // Année : ± 2 ans
   if (vehicleData.year) {
     const yearMin = vehicleData.year - 2;
     const yearMax = vehicleData.year + 2;
     params.set('regdate', `${yearMin}-${yearMax}`);
   }
 
-  // Kilométrage : ± 20 000 km (format: min-max)
+  // Kilométrage : ± 20 000 km
   if (vehicleData.mileage) {
     const kmMin = Math.max(0, vehicleData.mileage - 20000);
     const kmMax = vehicleData.mileage + 20000;
     params.set('mileage', `${kmMin}-${kmMax}`);
   }
 
-  // Puissance DIN : extraite de la finition (format: min-max avec +1)
-  const horsePower = extractHorsePowerFromFinition(vehicleData.finition);
-  if (horsePower) {
-    params.set('horse_power_din', `${horsePower}-${horsePower + 1}`);
-  }
+  return `https://www.leboncoin.fr/recherche?${params.toString()}`;
+}
 
-  // Marque (format: MARQUE en majuscules)
+// Construire l'URL LeBonCoin : catégorie voitures + texte + année + km + énergie + boîte
+function buildLeBonCoinUrl(vehicleData) {
+  const params = new URLSearchParams();
+
+  // Catégorie : 2 = Voitures
+  params.set('category', '2');
+
+  // Texte de recherche : Marque + Finition complète (inclut modèle)
   if (vehicleData.brand) {
-    const brandUpper = vehicleData.brand.toUpperCase();
-    params.set('u_car_brand', brandUpper);
+    let searchText;
+    if (vehicleData.finition) {
+      const finitionWords = vehicleData.finition.trim().split(/\s+/).slice(0, 10).join(' ');
+      searchText = `${vehicleData.brand} ${finitionWords}`;
+    } else if (vehicleData.model) {
+      searchText = `${vehicleData.brand} ${vehicleData.model}`;
+    } else {
+      searchText = vehicleData.brand;
+    }
+    params.set('text', searchText);
   }
 
-  // Modèle (format: MARQUE_Modele)
-  if (vehicleData.brand && vehicleData.model) {
-    const brandUpper = vehicleData.brand.toUpperCase();
-    // Prendre le premier mot du modèle et capitaliser
-    const modelWords = vehicleData.model.split(/\s+/);
-    const modelName = modelWords[0].charAt(0).toUpperCase() + modelWords[0].slice(1).toLowerCase();
-    params.set('u_car_model', `${brandUpper}_${modelName}`);
+  // Année : ± 2 ans
+  if (vehicleData.year) {
+    const yearMin = vehicleData.year - 2;
+    const yearMax = vehicleData.year + 2;
+    params.set('regdate', `${yearMin}-${yearMax}`);
   }
 
-  // Énergie : mapper Alcopa vers LeBonCoin
+  // Kilométrage : ± 20 000 km
+  if (vehicleData.mileage) {
+    const kmMin = Math.max(0, vehicleData.mileage - 20000);
+    const kmMax = vehicleData.mileage + 20000;
+    params.set('mileage', `${kmMin}-${kmMax}`);
+  }
+
+  // Énergie
   const fuelCode = mapEnergyToLeBonCoin(vehicleData.energyType);
   if (fuelCode) {
     params.set('fuel', fuelCode);
@@ -238,20 +268,6 @@ function buildLeBonCoinUrl(vehicleData) {
   const gearboxCode = mapGearboxToLeBonCoin(vehicleData.transmission);
   if (gearboxCode) {
     params.set('gearbox', gearboxCode);
-  }
-
-  // Type de véhicule : détecté depuis la finition/modèle Alcopa
-  const vehicleType = detectVehicleType(vehicleData.model, vehicleData.finition);
-  if (vehicleType) {
-    params.set('vehicle_type', vehicleType);
-  }
-
-  // Texte de recherche : Modèle + exclusions des versions absentes de la finition
-  // Exclure ESTATE, SW, BREAK etc. si non présent dans la finition Alcopa
-  // pour éviter les faux résultats (ex: CLIO IV vs CLIO IV ESTATE)
-  if (vehicleData.model) {
-    const searchText = buildSearchTextFromFinition(vehicleData.model, vehicleData.finition);
-    params.set('text', searchText);
   }
 
   return `https://www.leboncoin.fr/recherche?${params.toString()}`;
@@ -378,26 +394,41 @@ function extractTrimLevel(finitionUpper, modelUpper) {
 }
 
 // Extraire la puissance DIN de la finition Alcopa
-// La puissance est généralement un nombre entre 45 et 1000 CV
+// Priorité : nombre suivi de CH > nombre après moteur (BLUEHDI, TCE...) > premier nombre valide
 function extractHorsePowerFromFinition(finition) {
   if (!finition) return null;
 
-  // Chercher tous les nombres dans la finition
-  const numbers = finition.match(/\d+/g);
-  if (!numbers) return null;
+  const finitionUpper = finition.toUpperCase();
 
-  // Filtrer pour garder seulement les nombres qui ressemblent à une puissance DIN (45-1000)
-  const validPowers = numbers
-    .map(n => parseInt(n))
-    .filter(n => n >= 45 && n <= 1000);
+  // Priorité 1 : nombre directement suivi de "CH" (ex: "136CH", "100 CH")
+  const chMatch = finitionUpper.match(/(\d+)\s*CH\b/);
+  if (chMatch) {
+    const power = parseInt(chMatch[1]);
+    if (power >= 45 && power <= 1000) return power;
+  }
 
-  // Prendre le premier nombre valide trouvé (généralement la puissance)
-  // En excluant les nombres qui ressemblent à des cylindrées (1.5, 2.0 -> 15, 20)
-  for (const power of validPowers) {
-    // Exclure les petits nombres qui pourraient être des versions (E6, L1, etc.)
-    // et les nombres qui ressemblent à des cylindrées converties (15, 16, 18, 20, 22, 25, 30)
-    if (power >= 45) {
-      return power;
+  // Priorité 2 : nombre directement suivi de "CV" (ex: "136CV", "100 CV")
+  const cvMatch = finitionUpper.match(/(\d+)\s*CV\b/);
+  if (cvMatch) {
+    const power = parseInt(cvMatch[1]);
+    if (power >= 45 && power <= 1000) return power;
+  }
+
+  // Priorité 3 : nombre après un mot-clé moteur (ex: "BLUEHDI 100", "TCE 90", "PURETECH 130")
+  const enginePattern = /(?:BLUEHDI|PURETECH|HDI|E-HDI|THP|VTI|DCI|BLUE\s*DCI|TCE|SCE|TDI|TSI|TFSI|MULTIJET|MULTIAIR|JTDM?|TDCI|ECOBOOST|ECOBLUE|CDI|BLUETEC|CRDI|T-GDI|D-4D)\s*(\d+)/i;
+  const engineMatch = finitionUpper.match(enginePattern);
+  if (engineMatch) {
+    const power = parseInt(engineMatch[1]);
+    if (power >= 45 && power <= 1000) return power;
+  }
+
+  // Priorité 4 : premier nombre valide (45-1000) en excluant ceux suivis de KWH
+  const numbers = finitionUpper.matchAll(/(\d+)\s*(\w*)/g);
+  for (const match of numbers) {
+    const num = parseInt(match[1]);
+    const suffix = match[2].toUpperCase();
+    if (num >= 45 && num <= 1000 && suffix !== 'KWH' && suffix !== 'KW') {
+      return num;
     }
   }
 
