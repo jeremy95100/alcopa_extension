@@ -1,6 +1,6 @@
 // UI Injector - Creates and manages comparison icons on Alcopa pages
 
-function createComparisonIcons(vehicleData, vehicleElement) {
+function createComparisonIcons(vehicleData, vehicleElement, showFees = true) {
   // Create container for icons
   const container = document.createElement('div');
   container.className = 'alcopa-comparison-icons';
@@ -12,6 +12,12 @@ function createComparisonIcons(vehicleData, vehicleElement) {
   // Create La Centrale icon
   const lacentraleBtn = createIconButton('lacentrale', vehicleData);
   container.appendChild(lacentraleBtn);
+
+  // Create Fees calculator icon (sauf vente web)
+  if (showFees) {
+    const feesBtn = createFeesButton(vehicleData);
+    container.appendChild(feesBtn);
+  }
 
   return container;
 }
@@ -189,7 +195,8 @@ async function handleIconClick(event) {
   }
 }
 
-// Construire l'URL LeBonCoin recherche générale (toutes catégories, texte + filtres km/année)
+// Construire l'URL LeBonCoin recherche générale (toutes catégories, texte uniquement)
+// Note : les filtres km/année sont spécifiques à la catégorie véhicules et ne fonctionnent pas en recherche globale
 function buildLeBonCoinGeneralUrl(vehicleData) {
   const params = new URLSearchParams();
 
@@ -204,20 +211,6 @@ function buildLeBonCoinGeneralUrl(vehicleData) {
       searchText = vehicleData.brand;
     }
     params.set('text', searchText);
-  }
-
-  // Année : ± 2 ans
-  if (vehicleData.year) {
-    const yearMin = vehicleData.year - 2;
-    const yearMax = vehicleData.year + 2;
-    params.set('regdate', `${yearMin}-${yearMax}`);
-  }
-
-  // Kilométrage : ± 20 000 km
-  if (vehicleData.mileage) {
-    const kmMin = Math.max(0, vehicleData.mileage - 20000);
-    const kmMax = vehicleData.mileage + 20000;
-    params.set('mileage', `${kmMin}-${kmMax}`);
   }
 
   return `https://www.leboncoin.fr/recherche?${params.toString()}`;
@@ -822,4 +815,287 @@ function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
   return div.innerHTML;
+}
+
+// ==============================
+// Calcul des frais Alcopa
+// ==============================
+
+function createFeesButton(vehicleData) {
+  const button = document.createElement('button');
+  button.className = 'comparison-icon calculator-icon';
+  button.dataset.vehicle = JSON.stringify(vehicleData);
+
+  const img = document.createElement('img');
+  img.src = chrome.runtime.getURL('assets/icons/calculator-icon.svg');
+  img.alt = 'Calcul frais TTC';
+
+  button.appendChild(img);
+
+  // Hover : afficher le détail des frais directement
+  let hoverPopup = null;
+
+  button.addEventListener('mouseenter', () => {
+    const data = JSON.parse(button.dataset.vehicle);
+    const price = data.price;
+    if (!price || price <= 0) return;
+
+    const fees = calculateFees(price);
+    const commissionLabel = fees.isMinimum
+      ? 'Commission (min. 360\u00A0€)'
+      : 'Commission (14,4%)';
+
+    hoverPopup = document.createElement('div');
+    hoverPopup.className = 'alcopa-fees-hover-popup';
+    hoverPopup.style.cssText = `
+      position: absolute;
+      top: 100%;
+      left: 50%;
+      transform: translateX(-50%);
+      margin-top: 8px;
+      background: white;
+      border-radius: 8px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.25);
+      padding: 12px 16px;
+      z-index: 100000;
+      min-width: 270px;
+      font-size: 13px;
+      color: #333;
+      pointer-events: none;
+    `;
+
+    hoverPopup.innerHTML = `
+      <div style="font-weight:700; font-size:14px; margin-bottom:8px; color:#1565C0;">Calcul des Frais TTC</div>
+      <table style="width:100%; border-collapse:collapse;">
+        <tr style="border-bottom:1px solid #eee;">
+          <td style="padding:4px 0;">Prix d'adjudication</td>
+          <td style="padding:4px 0; text-align:right; font-weight:600;">${formatPrice(fees.price)}</td>
+        </tr>
+        <tr style="border-bottom:1px solid #eee;">
+          <td style="padding:4px 0; color:#666;">${commissionLabel}</td>
+          <td style="padding:4px 0; text-align:right; color:#e53935;">${formatPrice(fees.commission)}</td>
+        </tr>
+        <tr style="border-bottom:1px solid #eee;">
+          <td style="padding:4px 0; color:#666;">Frais de vente</td>
+          <td style="padding:4px 0; text-align:right; color:#e53935;">${formatPrice(fees.fraisFixes)}</td>
+        </tr>
+        <tr style="border-bottom:2px solid #1565C0;">
+          <td style="padding:4px 0; color:#666;">Frais LIVE</td>
+          <td style="padding:4px 0; text-align:right; color:#e53935;">${formatPrice(fees.fraisLive)}</td>
+        </tr>
+        <tr>
+          <td style="padding:6px 0; font-weight:700; font-size:15px;">TOTAL TTC</td>
+          <td style="padding:6px 0; text-align:right; font-weight:700; font-size:15px; color:#1565C0;">${formatPrice(fees.total)}</td>
+        </tr>
+      </table>
+      ${fees.isMinimum ? '<div style="margin-top:6px; font-size:11px; color:#e65100; background:#fff3e0; padding:4px 6px; border-radius:4px;">Min. forfaitaire appliqué (14,4% = ' + formatPrice(fees.price * fees.commissionRate) + ' &lt; 360\u00A0€)</div>' : ''}
+    `;
+
+    button.appendChild(hoverPopup);
+  });
+
+  button.addEventListener('mouseleave', () => {
+    if (hoverPopup) {
+      hoverPopup.remove();
+      hoverPopup = null;
+    }
+  });
+
+  // Click : ouvre aussi la modale complète
+  button.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const data = JSON.parse(button.dataset.vehicle);
+    const price = data.price;
+    if (price && price > 0) {
+      showFeesModal(price);
+    } else {
+      showFeesModal(0);
+    }
+  });
+
+  return button;
+}
+
+function calculateFees(price) {
+  const commissionRate = 0.144; // 14,4% TTC
+  const commissionMin = 360;    // Minimum 360 EUR TTC
+  const commission = Math.max(price * commissionRate, commissionMin);
+  const fraisFixes = 140;       // Frais de vente fixes TTC
+  const fraisLive = 40;         // Frais Alcopa LIVE TTC
+  const totalFrais = commission + fraisFixes + fraisLive;
+  const total = price + totalFrais;
+  const isMinimum = (price * commissionRate) < commissionMin;
+
+  return {
+    price,
+    commission: Math.round(commission * 100) / 100,
+    commissionRate,
+    isMinimum,
+    fraisFixes,
+    fraisLive,
+    totalFrais: Math.round(totalFrais * 100) / 100,
+    total: Math.round(total * 100) / 100
+  };
+}
+
+function showFeesModal(price) {
+  removeExistingModal();
+
+  const fees = calculateFees(price);
+  const modal = document.createElement('div');
+  modal.className = 'alcopa-results-modal';
+  modal.style.cssText = `
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    z-index: 999999 !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    background: rgba(0, 0, 0, 0.5) !important;
+  `;
+
+  const commissionLabel = fees.isMinimum
+    ? 'Commission (minimum forfaitaire)'
+    : `Commission (14,4%)`;
+
+  modal.innerHTML = `
+    <div class="modal-content" style="position: relative; z-index: 10; width: 90%; max-width: 500px; background: white; border-radius: 12px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3); overflow: hidden; display: flex; flex-direction: column;">
+      <div class="modal-header" style="display: flex; justify-content: space-between; align-items: center; padding: 20px 24px; background: linear-gradient(135deg, #2196F3 0%, #1565C0 100%); color: white;">
+        <h2 style="margin: 0; font-size: 22px; font-weight: 600;">Calcul des Frais TTC</h2>
+        <button class="close-btn" style="background: none; border: none; color: white; font-size: 32px; cursor: pointer; padding: 0; width: 32px; height: 32px;">×</button>
+      </div>
+      <div class="modal-body" style="padding: 24px;">
+        <table style="width: 100%; border-collapse: collapse; font-size: 15px;">
+          <tbody>
+            <tr style="border-bottom: 1px solid #e0e0e0;">
+              <td style="padding: 12px 8px; font-weight: 500;">Prix d'adjudication</td>
+              <td style="padding: 12px 8px; text-align: right; font-weight: 600;">${formatPrice(fees.price)}</td>
+            </tr>
+            <tr style="border-bottom: 1px solid #e0e0e0;">
+              <td style="padding: 12px 8px; color: #666;">${commissionLabel}</td>
+              <td style="padding: 12px 8px; text-align: right; color: #e53935;">${formatPrice(fees.commission)}</td>
+            </tr>
+            <tr style="border-bottom: 1px solid #e0e0e0;">
+              <td style="padding: 12px 8px; color: #666;">Frais de vente</td>
+              <td style="padding: 12px 8px; text-align: right; color: #e53935;">${formatPrice(fees.fraisFixes)}</td>
+            </tr>
+            <tr style="border-bottom: 2px solid #1565C0;">
+              <td style="padding: 12px 8px; color: #666;">Frais Alcopa LIVE</td>
+              <td style="padding: 12px 8px; text-align: right; color: #e53935;">${formatPrice(fees.fraisLive)}</td>
+            </tr>
+            <tr>
+              <td style="padding: 16px 8px; font-size: 18px; font-weight: 700;">TOTAL TTC</td>
+              <td style="padding: 16px 8px; text-align: right; font-size: 22px; font-weight: 700; color: #1565C0;">${formatPrice(fees.total)}</td>
+            </tr>
+          </tbody>
+        </table>
+        ${fees.isMinimum ? '<p style="margin-top: 12px; padding: 10px; background: #fff3e0; border-radius: 6px; font-size: 13px; color: #e65100;">Le minimum forfaitaire de commission (360 €) s\'applique car 14,4% du prix (' + formatPrice(fees.price * fees.commissionRate) + ') est inférieur à 360 €.</p>' : ''}
+        <p style="margin-top: 12px; font-size: 13px; color: #999; text-align: center;">Total des frais : ${formatPrice(fees.totalFrais)} (${(fees.totalFrais / fees.price * 100).toFixed(1)}% du prix)</p>
+      </div>
+    </div>
+  `;
+
+  modal.querySelector('.close-btn').addEventListener('click', () => modal.remove());
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) modal.remove();
+  });
+
+  const escHandler = (e) => {
+    if (e.key === 'Escape') {
+      modal.remove();
+      document.removeEventListener('keydown', escHandler);
+    }
+  };
+  document.addEventListener('keydown', escHandler);
+
+  document.body.appendChild(modal);
+}
+
+// Injecter le prix total TTC directement sur la page, à droite du "?" d'aide
+function injectTotalPriceLabel(price) {
+  if (!price || price <= 0) return;
+
+  // Éviter les doublons
+  if (document.querySelector('.alcopa-total-price-label')) return;
+
+  const fees = calculateFees(price);
+
+  let targetElement = null;
+
+  // Stratégie 1 : Trouver le "?" d'aide proche du prix (Mise à prix / Enchère courante)
+  const candidates = document.querySelectorAll('a, button, span, i, div, small');
+  for (const el of candidates) {
+    const text = el.textContent.trim();
+    if (text === '?' || text === '(?)' || el.classList.contains('help') || el.classList.contains('aide')) {
+      // Vérifier le contexte parent : est-ce près d'un prix ?
+      const parentText = (el.closest('div, section, td, tr, p') || el.parentElement || {}).textContent || '';
+      if (parentText.match(/Mise\s+.?\s*prix/i) || parentText.match(/Ench.re\s+courante/i) || parentText.includes('€')) {
+        targetElement = el;
+        break;
+      }
+    }
+  }
+
+  // Stratégie 2 : Trouver n'importe quel "?" sur la page
+  if (!targetElement) {
+    for (const el of candidates) {
+      const text = el.textContent.trim();
+      if (text === '?' || text === '(?)') {
+        targetElement = el;
+        break;
+      }
+    }
+  }
+
+  // Stratégie 3 : Fallback - chercher l'élément prix avec "Mise à prix" ou "Enchère courante"
+  if (!targetElement) {
+    const allElements = document.body.querySelectorAll('*');
+    for (const el of allElements) {
+      if (el.children.length > 5) continue;
+      const text = el.textContent.trim();
+      if ((text.match(/Ench.re\s+courante/i) || text.match(/Mise\s+.?\s*prix/i)) && text.includes('€')) {
+        targetElement = el;
+        break;
+      }
+    }
+  }
+
+  if (!targetElement) {
+    console.log('[Alcopa] No target element found to inject total price label');
+    return;
+  }
+
+  const label = document.createElement('span');
+  label.className = 'alcopa-total-price-label';
+  label.style.cssText = `
+    display: inline-block;
+    margin-left: 10px;
+    padding: 4px 10px;
+    background: linear-gradient(135deg, #2196F3, #1565C0);
+    color: white;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+    box-shadow: 0 2px 8px rgba(33, 150, 243, 0.3);
+    vertical-align: middle;
+    white-space: nowrap;
+  `;
+  label.textContent = `Total TTC : ${formatPrice(fees.total)}`;
+  label.title = 'Cliquez pour voir le détail des frais';
+
+  // Au clic, ouvrir la modale détaillée
+  label.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    showFeesModal(price);
+  });
+
+  // Insérer juste après l'élément cible (à droite du "?")
+  targetElement.insertAdjacentElement('afterend', label);
+  console.log(`[Alcopa] Injected total price label: ${formatPrice(fees.total)} next to help icon`);
 }

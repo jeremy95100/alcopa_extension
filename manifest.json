@@ -23,7 +23,9 @@
     {
       "matches": [
         "https://www.alcopa-auction.fr/salle-de-vente-encheres/*",
-        "https://www.alcopa-auction.fr/voiture-occasion/*"
+        "https://www.alcopa-auction.fr/voiture-occasion/*",
+        "https://www.alcopa-auction.fr/utilitaire-occasion/*",
+        "https://www.alcopa-auction.fr/vente-encheres-en-ligne/*"
       ],
       "js": [
         "utils/constants.js",

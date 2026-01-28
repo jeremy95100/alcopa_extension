@@ -9,33 +9,58 @@ if (document.readyState === 'loading') {
   initialize();
 }
 
+// Détecter si la page est une vente web (frais déjà inclus)
+function isWebSalePage() {
+  // Sur les pages detail, vérifier le breadcrumb
+  const breadcrumbLinks = document.querySelectorAll('.breadcrumb a');
+  for (const link of breadcrumbLinks) {
+    const href = link.getAttribute('href') || '';
+    if (href.includes('/vente-encheres-en-ligne/') || href.includes('/salle-de-vente-web')) {
+      return true;
+    }
+  }
+  // Sur les pages liste
+  if (window.location.pathname.includes('/vente-encheres-en-ligne/')) {
+    return true;
+  }
+  return false;
+}
+
 function initialize() {
   console.log('Initializing Alcopa Price Comparison...');
 
   // Detect page type
-  const isDetailPage = window.location.pathname.includes('/voiture-occasion/') &&
-                       !window.location.pathname.endsWith('/voiture-occasion');
-  const isListPage = window.location.pathname.includes('/salle-de-vente-encheres/');
+  const isDetailPage = (window.location.pathname.includes('/voiture-occasion/') ||
+                        window.location.pathname.includes('/utilitaire-occasion/')) &&
+                       !window.location.pathname.endsWith('/voiture-occasion') &&
+                       !window.location.pathname.endsWith('/utilitaire-occasion');
+  const isListPage = window.location.pathname.includes('/salle-de-vente-encheres/') ||
+                     window.location.pathname.includes('/vente-encheres-en-ligne/');
 
   console.log(`Page type - Detail: ${isDetailPage}, List: ${isListPage}`);
 
+  // Detect if this is a "vente web" (fees already included)
+  const isWebSale = isWebSalePage();
+  console.log(`Web sale: ${isWebSale}`);
+
   if (isDetailPage) {
     // Single vehicle detail page
-    processDetailPage();
+    processDetailPage(!isWebSale);
   } else if (isListPage) {
     // Multiple vehicles list page
-    processVehicles();
+    const isWebList = window.location.pathname.includes('/vente-encheres-en-ligne/');
+    processVehicles(!isWebList);
     // Watch for dynamically loaded vehicles
-    observePageChanges();
+    observePageChanges(!isWebList);
   } else {
     console.log('Unknown page type, trying to process vehicles...');
-    processVehicles();
-    observePageChanges();
+    processVehicles(true);
+    observePageChanges(true);
   }
 }
 
-function processDetailPage() {
-  console.log('Processing detail page...');
+function processDetailPage(showFees = true) {
+  console.log('Processing detail page... showFees:', showFees);
 
   // Check if icons already injected
   if (document.querySelector('.alcopa-comparison-icons')) {
@@ -51,21 +76,51 @@ function processDetailPage() {
 
     if (vehicleData && vehicleData.brand && vehicleData.model) {
       // Create comparison icons
-      const iconsContainer = createComparisonIcons(vehicleData, document.body);
+      const iconsContainer = createComparisonIcons(vehicleData, document.body, showFees);
 
-      // Find a good place to inject icons (near the price or title)
-      const priceElement = document.querySelector('.btn-primary, [class*="prix"], h1');
-      if (priceElement) {
-        const targetContainer = priceElement.parentElement || document.querySelector('.container');
-        if (targetContainer) {
-          // Create a wrapper with better positioning
-          const wrapper = document.createElement('div');
-          wrapper.style.cssText = 'position: fixed; top: 80px; right: 20px; z-index: 10000;';
-          wrapper.appendChild(iconsContainer);
-          document.body.appendChild(wrapper);
+      // Icônes centrées, insérées au-dessus des images (section Défauts esthétiques)
+      const wrapper = document.createElement('div');
+      wrapper.style.cssText = 'display: flex; justify-content: center; padding: 15px 0; z-index: 1000;';
+      wrapper.appendChild(iconsContainer);
 
-          console.log(`Injected icons for: ${vehicleData.brand} ${vehicleData.model}`);
+      // Chercher la section "Défauts esthétiques" ou les images du véhicule
+      let inserted = false;
+      const allHeadings = document.querySelectorAll('h1, h2, h3, h4, h5, h6');
+      for (const heading of allHeadings) {
+        if (heading.textContent.trim().toLowerCase().includes('défaut') ||
+            heading.textContent.trim().toLowerCase().includes('esthétique') ||
+            heading.textContent.trim().toLowerCase().includes('defaut')) {
+          heading.insertAdjacentElement('beforebegin', wrapper);
+          inserted = true;
+          break;
         }
+      }
+
+      // Fallback : avant le bouton "Contrôle technique" ou après le tableau de caractéristiques
+      if (!inserted) {
+        const ctButton = Array.from(document.querySelectorAll('a, button')).find(
+          el => el.textContent.trim().toLowerCase().includes('contrôle technique') ||
+                el.textContent.trim().toLowerCase().includes('controle technique')
+        );
+        if (ctButton) {
+          const ctParent = ctButton.closest('div, p, section') || ctButton.parentElement;
+          if (ctParent) {
+            ctParent.insertAdjacentElement('afterend', wrapper);
+            inserted = true;
+          }
+        }
+      }
+
+      // Dernier fallback : position fixe en bas
+      if (!inserted) {
+        wrapper.style.cssText = 'position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 10000;';
+        document.body.appendChild(wrapper);
+      }
+      console.log(`Injected icons for: ${vehicleData.brand} ${vehicleData.model}`);
+
+      // Injecter le prix total TTC à côté du prix (sauf vente web)
+      if (showFees && vehicleData.price) {
+        injectTotalPriceLabel(vehicleData.price);
       }
     } else {
       console.warn('Incomplete vehicle data:', vehicleData);
@@ -75,11 +130,11 @@ function processDetailPage() {
   }
 }
 
-function processVehicles() {
+function processVehicles(showFees = true) {
   // Find all vehicle cards on the page
   const vehicleCards = findVehicleCards();
 
-  console.log(`Found ${vehicleCards.length} vehicle cards`);
+  console.log(`Found ${vehicleCards.length} vehicle cards, showFees: ${showFees}`);
 
   vehicleCards.forEach((card, index) => {
     // Check if icons already injected
@@ -93,7 +148,7 @@ function processVehicles() {
 
       if (vehicleData && vehicleData.brand && vehicleData.model) {
         // Create and inject comparison icons
-        const iconsContainer = createComparisonIcons(vehicleData, card);
+        const iconsContainer = createComparisonIcons(vehicleData, card, showFees);
         injectIcons(card, iconsContainer);
 
         console.log(`Injected icons for: ${vehicleData.brand} ${vehicleData.model}`);
@@ -117,7 +172,8 @@ function findVehicleCards() {
     'article[class*="vehicle"]',
     'div[class*="vehicle-card"]',
     'div[class*="lot"]',
-    'a[href*="/voiture-occasion/"]',
+    // Chercher tous les types de véhicules (tourisme + utilitaires + autres)
+    'a[href*="/voiture-occasion/"], a[href*="/utilitaire-occasion/"]',
     '[data-vehicle]',
     '.vehicle-item',
     '.lot-item'
@@ -126,7 +182,7 @@ function findVehicleCards() {
   for (const selector of selectors) {
     cards = document.querySelectorAll(selector);
     if (cards.length > 0) {
-      console.log(`Found vehicle cards using selector: ${selector}`);
+      console.log(`Found ${cards.length} vehicle cards using selector: ${selector}`);
       break;
     }
   }
@@ -348,8 +404,9 @@ function extractVehicleData(cardElement) {
     data.transmission = 'MANUELLE';
   }
 
-  // Try to get link to detail page
-  const detailLink = cardElement.querySelector('a[href*="/voiture-occasion/"]');
+  // Try to get link to detail page (tourisme ou utilitaire)
+  const detailLink = cardElement.querySelector('a[href*="/voiture-occasion/"], a[href*="/utilitaire-occasion/"]')
+                  || cardElement.closest('a[href*="/voiture-occasion/"], a[href*="/utilitaire-occasion/"]');
   if (detailLink) {
     data.alcopa_url = detailLink.href;
   }
@@ -427,7 +484,7 @@ function injectIcons(cardElement, iconsContainer) {
   cardElement.appendChild(iconsContainer);
 }
 
-function observePageChanges() {
+function observePageChanges(showFees = true) {
   // Watch for new vehicle cards being added (pagination, infinite scroll)
   const observer = new MutationObserver((mutations) => {
     let shouldProcess = false;
@@ -443,7 +500,7 @@ function observePageChanges() {
       // Debounce to avoid processing too frequently
       clearTimeout(observePageChanges.timeout);
       observePageChanges.timeout = setTimeout(() => {
-        processVehicles();
+        processVehicles(showFees);
       }, 500);
     }
   });
