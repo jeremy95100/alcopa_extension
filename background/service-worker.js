@@ -19,6 +19,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     // Return true to indicate async response
     return true;
   }
+
+  if (request.action === 'CALCULATE_MARGIN') {
+    handleMarginCalculation(request.vehicleData)
+      .then(data => sendResponse({ success: true, data }))
+      .catch(error => {
+        console.error('Error calculating margin:', error);
+        sendResponse({ success: false, error: error.message });
+      });
+
+    // Return true to indicate async response
+    return true;
+  }
 });
 
 async function handleComparison(vehicleData, source) {
@@ -698,3 +710,339 @@ function getRecommendation(profitPct) {
 // Constants (duplicated from constants.js since service worker can't easily import)
 const LEBONCOIN_BASE_URL = 'https://www.leboncoin.fr';
 const LACENTRALE_BASE_URL = 'https://www.lacentrale.fr';
+
+// ==============================
+// Margin Calculation Functions
+// ==============================
+
+async function handleMarginCalculation(vehicleData) {
+  console.log('📊 Calculating margin from LeBonCoin...');
+  console.log('Vehicle data:', vehicleData);
+
+  // Construire les 2 URLs
+  const url1 = buildLeBonCoinUrlForMargin(vehicleData);
+  const url2 = buildLeBonCoinGeneralUrlWithStrategyForMargin(vehicleData, {
+    modelType: 'finitionThreeWords',
+    kmTolerance: 20000,
+    yearTolerance: 2
+  });
+
+  console.log('URL 1 (filtered):', url1);
+  console.log('URL 2 (fallback):', url2);
+
+  // Scraper les 2 URLs
+  const [prices1Raw, prices2Raw] = await Promise.all([
+    scrapeLeBonCoinPricesOnly(url1),
+    scrapeLeBonCoinPricesOnly(url2)
+  ]);
+
+  console.log(`Found ${prices1Raw.length} prices in tab 1 (before outlier removal)`);
+  console.log(`Found ${prices2Raw.length} prices in tab 2 (before outlier removal)`);
+
+  // Supprimer les outliers de chaque liste
+  const prices1 = removeOutliers(prices1Raw);
+  const prices2 = removeOutliers(prices2Raw);
+
+  console.log(`After outlier removal: ${prices1.length} prices in tab 1, ${prices2.length} prices in tab 2`);
+
+  // Sélectionner les 5 premiers prix en privilégiant l'onglet 1
+  let selectedPrices = [];
+
+  // Trier les prix de chaque onglet du moins cher au plus cher
+  const sortedPrices1 = prices1.sort((a, b) => a - b);
+  const sortedPrices2 = prices2.sort((a, b) => a - b);
+
+  if (sortedPrices1.length >= 5) {
+    // Si l'onglet 1 a au moins 5 résultats, prendre les 5 moins chers de l'onglet 1
+    selectedPrices = sortedPrices1.slice(0, 5);
+  } else if (sortedPrices1.length > 0) {
+    // Prendre tous les prix de l'onglet 1 et compléter avec l'onglet 2
+    const needed = 5 - sortedPrices1.length;
+    selectedPrices = [...sortedPrices1, ...sortedPrices2.slice(0, needed)];
+    // Trier le résultat final
+    selectedPrices.sort((a, b) => a - b);
+  } else {
+    // Aucun prix dans l'onglet 1, prendre les 5 moins chers de l'onglet 2
+    selectedPrices = sortedPrices2.slice(0, 5);
+  }
+
+  if (selectedPrices.length === 0) {
+    throw new Error('Aucun prix trouvé sur LeBonCoin');
+  }
+
+  // Calculer la marge moyenne
+  const avgMarketPrice = selectedPrices.reduce((sum, p) => sum + p, 0) / selectedPrices.length;
+  const margin = avgMarketPrice - vehicleData.price;
+  const allPrices = [...prices1, ...prices2].filter(p => p > 0);
+  const minPrice = allPrices.length > 0 ? Math.min(...allPrices) : 0;
+  const maxPrice = allPrices.length > 0 ? Math.max(...allPrices) : 0;
+  const totalAds = prices1.length + prices2.length;
+
+  return {
+    margin,
+    avgMarketPrice,
+    alcopaPrice: vehicleData.price,
+    top5Prices: selectedPrices,
+    minPrice,
+    maxPrice,
+    totalAds,
+    pricesTab1: prices1.length,
+    pricesTab2: prices2.length
+  };
+}
+
+async function scrapeLeBonCoinPricesOnly(url) {
+  try {
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'fr-FR,fr;q=0.9'
+      }
+    });
+
+    if (!response.ok) {
+      console.error('HTTP error:', response.status);
+      return [];
+    }
+
+    const html = await response.text();
+
+    // Parser le HTML pour extraire les prix
+    const nextDataMatch = html.match(/<script id="__NEXT_DATA__"[^>]*>(.*?)<\/script>/s);
+
+    if (nextDataMatch) {
+      try {
+        const nextData = JSON.parse(nextDataMatch[1]);
+        const ads = nextData?.props?.pageProps?.searchData?.ads ||
+                    nextData?.props?.pageProps?.ads ||
+                    nextData?.props?.initialState?.ads || [];
+
+        // Debug: afficher les premiers prix
+        const allPrices = ads.map(ad => ad.price?.[0] || ad.price || 0).filter(p => p > 0);
+        console.log(`Found ${ads.length} ads with ${allPrices.length} prices:`, allPrices.sort((a, b) => a - b));
+
+        // Extraire les prix et les trier par ordre décroissant
+        const prices = ads
+          .map(ad => ad.price?.[0] || ad.price || 0)
+          .filter(p => p > 0)
+          .sort((a, b) => b - a); // Tri décroissant
+
+        console.log(`Extracted ${prices.length} prices from ${ads.length} total ads`);
+        return prices;
+      } catch (e) {
+        console.error('Error parsing __NEXT_DATA__:', e);
+      }
+    }
+
+    // Fallback: extraire les prix avec regex
+    const priceMatches = html.match(/"price":\s*(\d+)/g);
+    if (priceMatches) {
+      const prices = priceMatches
+        .map(m => parseInt(m.match(/\d+/)[0]))
+        .filter(p => p > 0)
+        .sort((a, b) => b - a);
+      console.log(`Extracted ${prices.length} prices from regex fallback`);
+      return prices;
+    }
+
+    return [];
+  } catch (error) {
+    console.error('Error scraping LeBonCoin prices:', error);
+    return [];
+  }
+}
+
+function buildLeBonCoinUrlForMargin(vehicleData) {
+  const params = new URLSearchParams();
+
+  // Catégorie : 2 = Voitures
+  params.set('category', '2');
+
+  // Texte de recherche : Marque + Finition complète (inclut modèle)
+  if (vehicleData.brand) {
+    let searchText;
+    if (vehicleData.finition) {
+      // Prendre les 10 premiers mots de la finition
+      const finitionWords = vehicleData.finition.trim().split(/\s+/).slice(0, 10).join(' ');
+      searchText = `${vehicleData.brand} ${finitionWords}`;
+    } else if (vehicleData.model) {
+      searchText = `${vehicleData.brand} ${vehicleData.model}`;
+    } else {
+      searchText = vehicleData.brand;
+    }
+    params.set('text', searchText);
+  }
+
+  // Année : ± 2 ans
+  if (vehicleData.year) {
+    const yearMin = vehicleData.year - 2;
+    const yearMax = vehicleData.year + 2;
+    params.set('regdate', `${yearMin}-${yearMax}`);
+  }
+
+  // Kilométrage : ± 20 000 km
+  if (vehicleData.mileage) {
+    const kmMin = Math.max(0, vehicleData.mileage - 20000);
+    const kmMax = vehicleData.mileage + 20000;
+    params.set('mileage', `${kmMin}-${kmMax}`);
+  }
+
+  // Énergie
+  const fuelCode = mapEnergyToLeBonCoin(vehicleData.energyType);
+  if (fuelCode) {
+    params.set('fuel', fuelCode);
+  }
+
+  // Boîte de vitesse
+  const gearboxCode = mapGearboxToLeBonCoin(vehicleData.transmission);
+  if (gearboxCode) {
+    params.set('gearbox', gearboxCode);
+  }
+
+  return `https://www.leboncoin.fr/recherche?${params.toString()}`;
+}
+
+function buildLeBonCoinGeneralUrlWithStrategyForMargin(vehicleData, strategy) {
+  const params = new URLSearchParams();
+  params.set('category', '2');
+
+  // Texte de recherche selon le type de modèle
+  if (vehicleData.brand) {
+    let searchText = vehicleData.brand;
+
+    // Si on demande la finition avec 3 mots max
+    if (strategy.modelType === 'finitionThreeWords' && vehicleData.finition) {
+      const finitionWords = vehicleData.finition.trim().split(/\s+/).slice(0, 3).join(' ');
+      searchText = `${vehicleData.brand} ${finitionWords}`;
+    }
+    // Sinon utiliser le modèle
+    else if (vehicleData.model && strategy.modelType !== 'brandOnly') {
+      const modelWords = vehicleData.model.trim().split(/\s+/);
+
+      if (strategy.modelType === 'full') {
+        searchText = `${vehicleData.brand} ${vehicleData.model}`;
+      } else if (strategy.modelType === 'twoWords') {
+        const twoWords = modelWords.slice(0, 2).join(' ');
+        searchText = `${vehicleData.brand} ${twoWords}`;
+      } else if (strategy.modelType === 'simplified') {
+        const firstWord = modelWords[0];
+        searchText = `${vehicleData.brand} ${firstWord}`;
+      }
+    }
+
+    params.set('text', searchText);
+  }
+
+  // Année (si tolérance définie)
+  if (strategy.yearTolerance !== null && vehicleData.year) {
+    const yearMin = vehicleData.year - strategy.yearTolerance;
+    const yearMax = vehicleData.year + strategy.yearTolerance;
+    params.set('regdate', `${yearMin}-${yearMax}`);
+  }
+
+  // Kilométrage (si tolérance définie)
+  if (strategy.kmTolerance !== null && vehicleData.mileage) {
+    const kmMin = Math.max(0, vehicleData.mileage - strategy.kmTolerance);
+    const kmMax = vehicleData.mileage + strategy.kmTolerance;
+    params.set('mileage', `${kmMin}-${kmMax}`);
+  }
+
+  // Énergie
+  const fuelCode = mapEnergyToLeBonCoin(vehicleData.energyType);
+  if (fuelCode) {
+    params.set('fuel', fuelCode);
+  }
+
+  // Boîte de vitesse
+  const gearboxCode = mapGearboxToLeBonCoin(vehicleData.transmission);
+  if (gearboxCode) {
+    params.set('gearbox', gearboxCode);
+  }
+
+  return `https://www.leboncoin.fr/recherche?${params.toString()}`;
+}
+
+function mapEnergyToLeBonCoin(energyType) {
+  if (!energyType) return null;
+
+  const energyMap = {
+    'GO': '2',
+    'DIESEL': '2',
+    'ES': '1',
+    'ESSENCE': '1',
+    'GPL': '3',
+    'ELECTRIQUE': '4',
+    'EH': '6',
+    'HYBRIDE': '6'
+  };
+
+  return energyMap[energyType.toUpperCase()] || null;
+}
+
+function mapGearboxToLeBonCoin(transmission) {
+  if (!transmission) return null;
+
+  const gearboxMap = {
+    'MANUELLE': '1',
+    'AUTOMATIQUE': '2',
+    'SEMI-AUTOMATIQUE': '2'
+  };
+
+  return gearboxMap[transmission.toUpperCase()] || null;
+}
+
+// Supprimer les outliers (valeurs aberrantes) d'un tableau de prix
+// Utilise une approche basée sur la médiane et l'écart-type
+function removeOutliers(prices) {
+  if (prices.length < 3) {
+    // Pas assez de données pour détecter les outliers
+    return prices;
+  }
+
+  // Calculer la médiane
+  const sorted = [...prices].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+
+  // Calculer la moyenne
+  const mean = prices.reduce((sum, p) => sum + p, 0) / prices.length;
+
+  // Calculer l'écart-type
+  const variance = prices.reduce((sum, p) => sum + Math.pow(p - mean, 2), 0) / prices.length;
+  const stdDev = Math.sqrt(variance);
+
+  // Approche combinée : supprimer les prix qui sont :
+  // 1. > médiane * 2 (trop élevé par rapport à la médiane)
+  // 2. < médiane * 0.4 (trop bas par rapport à la médiane)
+  // 3. > moyenne + 2.5 * écart-type (statistiquement aberrant)
+  const upperMedianLimit = median * 2;
+  const lowerMedianLimit = median * 0.4;
+  const upperStdDevLimit = mean + 2.5 * stdDev;
+
+  const filtered = prices.filter(price => {
+    if (price > upperMedianLimit) {
+      console.log(`  Removing outlier ${price}€ (> ${upperMedianLimit.toFixed(0)}€, 2x median)`);
+      return false;
+    }
+    if (price < lowerMedianLimit) {
+      console.log(`  Removing outlier ${price}€ (< ${lowerMedianLimit.toFixed(0)}€, 0.4x median)`);
+      return false;
+    }
+    if (price > upperStdDevLimit) {
+      console.log(`  Removing outlier ${price}€ (> ${upperStdDevLimit.toFixed(0)}€, mean+2.5σ)`);
+      return false;
+    }
+    return true;
+  });
+
+  console.log(`Outlier detection: median=${median}€, mean=${mean.toFixed(0)}€, stdDev=${stdDev.toFixed(0)}€`);
+  console.log(`Removed ${prices.length - filtered.length} outliers out of ${prices.length} prices`);
+
+  if (filtered.length === 0) {
+    // Si tous les prix sont des outliers, garder les prix originaux
+    console.warn('All prices were outliers, keeping original prices');
+    return prices;
+  }
+
+  return filtered;
+}

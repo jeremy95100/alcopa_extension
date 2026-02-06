@@ -13,6 +13,10 @@ function createComparisonIcons(vehicleData, vehicleElement, showFees = true) {
   const lacentraleBtn = createIconButton('lacentrale', vehicleData);
   container.appendChild(lacentraleBtn);
 
+  // Create Margin indicator icon
+  const marginBtn = createMarginButton(vehicleData);
+  container.appendChild(marginBtn);
+
   // Create Fees calculator icon (sauf vente web)
   if (showFees) {
     const feesBtn = createFeesButton(vehicleData);
@@ -127,13 +131,25 @@ async function handleIconClick(event) {
   console.log('Vehicle data:', vehicleData);
 
   if (source === 'leboncoin') {
-    // Ouvrir 2 onglets : recherche voitures filtrée + recherche globale
+    console.log('🔍 Opening LeBonCoin tabs...');
+    console.log('Vehicle data:', vehicleData);
+
+    // Onglet 1 : Recherche filtrée complète (finition + tous les filtres)
     const filteredUrl = buildLeBonCoinUrl(vehicleData);
-    const generalUrl = buildLeBonCoinGeneralUrl(vehicleData);
-    console.log('Opening LeBonCoin filtered URL:', filteredUrl);
-    console.log('Opening LeBonCoin general URL:', generalUrl);
+    console.log('Onglet 1 (filtres complets):', filteredUrl);
+
+    // Onglet 2 : Recherche élargie (3 mots de la finition + km ±40k)
+    const fallbackUrl = buildLeBonCoinGeneralUrlWithStrategy(vehicleData, {
+      modelType: 'finitionThreeWords',
+      kmTolerance: 20000,
+      yearTolerance: 2
+    });
+    console.log('Onglet 2 (filtres élargis):', fallbackUrl);
+
+    // Ouvrir les 2 onglets en même temps (pas de setTimeout pour éviter le blocage)
     window.open(filteredUrl, '_blank');
-    window.open(generalUrl, '_blank');
+    window.open(fallbackUrl, '_blank');
+
     return;
   }
 
@@ -195,11 +211,104 @@ async function handleIconClick(event) {
   }
 }
 
-// Construire l'URL LeBonCoin recherche générale (toutes catégories, texte uniquement)
-// Note : les filtres km/année sont spécifiques à la catégorie véhicules et ne fonctionnent pas en recherche globale
-function buildLeBonCoinGeneralUrl(vehicleData) {
-  const params = new URLSearchParams();
+// Fonction intelligente pour trouver la meilleure URL fallback (onglet 2)
+// Enlève progressivement les filtres jusqu'à trouver des résultats
+async function findBestLeBonCoinFallbackUrl(vehicleData) {
+  console.log('🔍 Finding best fallback URL with progressive filter removal...');
 
+  // Liste des stratégies à essayer dans l'ordre
+  const strategies = [
+    // 1. Retirer boîte de vitesse
+    {
+      name: 'Sans boîte de vitesse',
+      buildUrl: () => buildLeBonCoinUrlWithoutFilters(vehicleData, ['gearbox'])
+    },
+    // 2. Retirer énergie
+    {
+      name: 'Sans boîte ET sans énergie',
+      buildUrl: () => buildLeBonCoinUrlWithoutFilters(vehicleData, ['gearbox', 'fuel'])
+    },
+    // 3. Augmenter km à ±40k
+    {
+      name: 'Sans boîte/énergie + km ±40k',
+      buildUrl: () => buildLeBonCoinUrlWithCustomFilters(vehicleData, {
+        removeFilters: ['gearbox', 'fuel'],
+        kmTolerance: 40000
+      })
+    },
+    // 4. Augmenter km à ±60k
+    {
+      name: 'Sans boîte/énergie + km ±60k',
+      buildUrl: () => buildLeBonCoinUrlWithCustomFilters(vehicleData, {
+        removeFilters: ['gearbox', 'fuel'],
+        kmTolerance: 60000
+      })
+    },
+    // 5. Augmenter année à ±3
+    {
+      name: 'Sans boîte/énergie + km ±60k + année ±3',
+      buildUrl: () => buildLeBonCoinUrlWithCustomFilters(vehicleData, {
+        removeFilters: ['gearbox', 'fuel'],
+        kmTolerance: 60000,
+        yearTolerance: 3
+      })
+    },
+    // 6. Marque + modèle complet seulement
+    {
+      name: 'Marque + modèle complet',
+      buildUrl: () => buildLeBonCoinGeneralUrlWithStrategy(vehicleData, {
+        modelType: 'full',
+        kmTolerance: null,
+        yearTolerance: null
+      })
+    },
+    // 7. Marque + 2 mots du modèle
+    {
+      name: 'Marque + 2 mots du modèle',
+      buildUrl: () => buildLeBonCoinGeneralUrlWithStrategy(vehicleData, {
+        modelType: 'twoWords',
+        kmTolerance: null,
+        yearTolerance: null
+      })
+    },
+    // 8. Marque + 1 mot du modèle
+    {
+      name: 'Marque + 1 mot du modèle',
+      buildUrl: () => buildLeBonCoinGeneralUrlWithStrategy(vehicleData, {
+        modelType: 'simplified',
+        kmTolerance: null,
+        yearTolerance: null
+      })
+    }
+  ];
+
+  // Essayer chaque stratégie
+  for (const strategy of strategies) {
+    console.log(`📋 Trying fallback strategy: ${strategy.name}`);
+    const url = strategy.buildUrl();
+    console.log(`   URL: ${url}`);
+
+    // Vérifier si cette URL donne des résultats
+    const hasResults = await checkLeBonCoinResults(url);
+
+    if (hasResults) {
+      console.log(`   ✅ Found results!`);
+      return url;
+    } else {
+      console.log(`   ❌ No results, trying next strategy...`);
+    }
+  }
+
+  console.log('❌ No fallback strategy worked');
+  return null;
+}
+
+// Construire URL LeBonCoin en retirant certains filtres
+function buildLeBonCoinUrlWithoutFilters(vehicleData, filtersToRemove = []) {
+  const params = new URLSearchParams();
+  params.set('category', '2');
+
+  // Texte de recherche : Marque + Finition complète
   if (vehicleData.brand) {
     let searchText;
     if (vehicleData.finition) {
@@ -213,7 +322,218 @@ function buildLeBonCoinGeneralUrl(vehicleData) {
     params.set('text', searchText);
   }
 
+  // Année : ± 2 ans
+  if (vehicleData.year) {
+    const yearMin = vehicleData.year - 2;
+    const yearMax = vehicleData.year + 2;
+    params.set('regdate', `${yearMin}-${yearMax}`);
+  }
+
+  // Kilométrage : ± 20 000 km
+  if (vehicleData.mileage) {
+    const kmMin = Math.max(0, vehicleData.mileage - 20000);
+    const kmMax = vehicleData.mileage + 20000;
+    params.set('mileage', `${kmMin}-${kmMax}`);
+  }
+
+  // Énergie (sauf si dans filtersToRemove)
+  if (!filtersToRemove.includes('fuel')) {
+    const fuelCode = mapEnergyToLeBonCoin(vehicleData.energyType);
+    if (fuelCode) {
+      params.set('fuel', fuelCode);
+    }
+  }
+
+  // Boîte de vitesse (sauf si dans filtersToRemove)
+  if (!filtersToRemove.includes('gearbox')) {
+    const gearboxCode = mapGearboxToLeBonCoin(vehicleData.transmission);
+    if (gearboxCode) {
+      params.set('gearbox', gearboxCode);
+    }
+  }
+
   return `https://www.leboncoin.fr/recherche?${params.toString()}`;
+}
+
+// Construire URL LeBonCoin avec filtres personnalisés
+function buildLeBonCoinUrlWithCustomFilters(vehicleData, options = {}) {
+  const {
+    removeFilters = [],
+    kmTolerance = 20000,
+    yearTolerance = 2
+  } = options;
+
+  const params = new URLSearchParams();
+  params.set('category', '2');
+
+  // Texte de recherche : Marque + Finition complète
+  if (vehicleData.brand) {
+    let searchText;
+    if (vehicleData.finition) {
+      const finitionWords = vehicleData.finition.trim().split(/\s+/).slice(0, 10).join(' ');
+      searchText = `${vehicleData.brand} ${finitionWords}`;
+    } else if (vehicleData.model) {
+      searchText = `${vehicleData.brand} ${vehicleData.model}`;
+    } else {
+      searchText = vehicleData.brand;
+    }
+    params.set('text', searchText);
+  }
+
+  // Année
+  if (vehicleData.year) {
+    const yearMin = vehicleData.year - yearTolerance;
+    const yearMax = vehicleData.year + yearTolerance;
+    params.set('regdate', `${yearMin}-${yearMax}`);
+  }
+
+  // Kilométrage
+  if (vehicleData.mileage) {
+    const kmMin = Math.max(0, vehicleData.mileage - kmTolerance);
+    const kmMax = vehicleData.mileage + kmTolerance;
+    params.set('mileage', `${kmMin}-${kmMax}`);
+  }
+
+  // Énergie (sauf si dans removeFilters)
+  if (!removeFilters.includes('fuel')) {
+    const fuelCode = mapEnergyToLeBonCoin(vehicleData.energyType);
+    if (fuelCode) {
+      params.set('fuel', fuelCode);
+    }
+  }
+
+  // Boîte de vitesse (sauf si dans removeFilters)
+  if (!removeFilters.includes('gearbox')) {
+    const gearboxCode = mapGearboxToLeBonCoin(vehicleData.transmission);
+    if (gearboxCode) {
+      params.set('gearbox', gearboxCode);
+    }
+  }
+
+  return `https://www.leboncoin.fr/recherche?${params.toString()}`;
+}
+
+// Construire URL avec une stratégie spécifique
+function buildLeBonCoinGeneralUrlWithStrategy(vehicleData, strategy) {
+  const params = new URLSearchParams();
+  params.set('category', '2');
+
+  // Texte de recherche selon le type de modèle
+  if (vehicleData.brand) {
+    let searchText = vehicleData.brand;
+
+    // Si on demande la finition avec 3 mots max
+    if (strategy.modelType === 'finitionThreeWords' && vehicleData.finition) {
+      const finitionWords = vehicleData.finition.trim().split(/\s+/).slice(0, 3).join(' ');
+      searchText = `${vehicleData.brand} ${finitionWords}`;
+    }
+    // Sinon utiliser le modèle
+    else if (vehicleData.model && strategy.modelType !== 'brandOnly') {
+      const modelWords = vehicleData.model.trim().split(/\s+/);
+
+      if (strategy.modelType === 'full') {
+        searchText = `${vehicleData.brand} ${vehicleData.model}`;
+      } else if (strategy.modelType === 'twoWords') {
+        const twoWords = modelWords.slice(0, 2).join(' ');
+        searchText = `${vehicleData.brand} ${twoWords}`;
+      } else if (strategy.modelType === 'simplified') {
+        const firstWord = modelWords[0];
+        searchText = `${vehicleData.brand} ${firstWord}`;
+      }
+    }
+
+    params.set('text', searchText);
+  }
+
+  // Année (si tolérance définie)
+  if (strategy.yearTolerance !== null && vehicleData.year) {
+    const yearMin = vehicleData.year - strategy.yearTolerance;
+    const yearMax = vehicleData.year + strategy.yearTolerance;
+    params.set('regdate', `${yearMin}-${yearMax}`);
+  }
+
+  // Kilométrage (si tolérance définie)
+  if (strategy.kmTolerance !== null && vehicleData.mileage) {
+    const kmMin = Math.max(0, vehicleData.mileage - strategy.kmTolerance);
+    const kmMax = vehicleData.mileage + strategy.kmTolerance;
+    params.set('mileage', `${kmMin}-${kmMax}`);
+  }
+
+  // Énergie
+  const fuelCode = mapEnergyToLeBonCoin(vehicleData.energyType);
+  if (fuelCode) {
+    params.set('fuel', fuelCode);
+  }
+
+  // Boîte de vitesse
+  const gearboxCode = mapGearboxToLeBonCoin(vehicleData.transmission);
+  if (gearboxCode) {
+    params.set('gearbox', gearboxCode);
+  }
+
+  return `https://www.leboncoin.fr/recherche?${params.toString()}`;
+}
+
+// Compter le nombre de résultats d'une URL LeBonCoin
+async function countLeBonCoinResults(url) {
+  try {
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'fr-FR,fr;q=0.9'
+      }
+    });
+
+    if (!response.ok) {
+      return 0;
+    }
+
+    const html = await response.text();
+
+    // Vérifier s'il y a des annonces dans le HTML
+    // LeBonCoin utilise Next.js, chercher le script __NEXT_DATA__
+    const nextDataMatch = html.match(/<script id="__NEXT_DATA__"[^>]*>(.*?)<\/script>/s);
+
+    if (nextDataMatch) {
+      try {
+        const nextData = JSON.parse(nextDataMatch[1]);
+        const ads = nextData?.props?.pageProps?.searchData?.ads ||
+                    nextData?.props?.pageProps?.ads ||
+                    nextData?.props?.initialState?.ads || [];
+
+        console.log(`   Found ${ads.length} ads in __NEXT_DATA__`);
+        return ads.length;
+      } catch (e) {
+        console.error('   Error parsing __NEXT_DATA__:', e);
+      }
+    }
+
+    // Fallback: compter les patterns de prix dans le HTML
+    const priceMatches = html.match(/"price":\s*\d+/g);
+    if (priceMatches) {
+      console.log(`   Found ${priceMatches.length} price mentions in HTML`);
+      return priceMatches.length;
+    }
+
+    // Dernier fallback: vérifier s'il n'y a pas le message "Aucune annonce"
+    if (html.includes('Aucune annonce') || html.includes('No results')) {
+      console.log('   Found "no results" message');
+      return 0;
+    }
+
+    // Si on arrive ici sans certitude, retourner 0 par précaution
+    return 0;
+  } catch (error) {
+    console.error('   Error counting results:', error);
+    return 0;
+  }
+}
+
+// Vérifier si une URL LeBonCoin retourne des résultats (au moins 1)
+async function checkLeBonCoinResults(url) {
+  const count = await countLeBonCoinResults(url);
+  return count > 0;
 }
 
 // Construire l'URL LeBonCoin : catégorie voitures + texte + année + km + énergie + boîte
@@ -818,6 +1138,241 @@ function escapeHtml(text) {
 }
 
 // ==============================
+// Indicateur de marge LeBonCoin
+// ==============================
+
+function createMarginButton(vehicleData) {
+  const button = document.createElement('button');
+  button.className = 'comparison-icon margin-icon';
+  button.dataset.vehicle = JSON.stringify(vehicleData);
+  button.innerHTML = '<span class="margin-loading">⏳</span>';
+  button.title = 'Calcul de la marge en cours...';
+
+  // Envoyer une requête au service worker pour calculer la marge
+  chrome.runtime.sendMessage({
+    action: 'CALCULATE_MARGIN',
+    vehicleData: vehicleData
+  }).then(response => {
+    if (response.success) {
+      const marginData = response.data;
+
+      // Calculer les frais pour afficher la marge nette
+      const fees = calculateFees(vehicleData.price);
+      const marginNet = marginData.avgMarketPrice - fees.total;
+      const isPositive = marginNet >= 0;
+
+      // Ajouter la classe positive/negative sur le bouton lui-même
+      button.classList.add(isPositive ? 'positive' : 'negative');
+      button.innerHTML = `<span class="margin-value">${isPositive ? '+' : ''}${formatPrice(marginNet)}</span>`;
+      button.title = `Marge nette (après frais): ${isPositive ? '+' : ''}${formatPrice(marginNet)}`;
+
+      // Au clic, afficher les détails
+      button.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        showMarginModal(marginData, vehicleData);
+      });
+    } else {
+      throw new Error(response.error || 'Erreur inconnue');
+    }
+  }).catch(error => {
+    console.error('Error calculating margin:', error);
+    button.innerHTML = '<span class="margin-error">❌</span>';
+    button.title = 'Erreur lors du calcul de la marge';
+  });
+
+  return button;
+}
+
+async function calculateMarginFromLeBonCoin(vehicleData) {
+  console.log('📊 Calculating margin from LeBonCoin...');
+
+  // Construire les 2 URLs
+  const url1 = buildLeBonCoinUrl(vehicleData);
+  const url2 = buildLeBonCoinGeneralUrlWithStrategy(vehicleData, {
+    modelType: 'twoWords',
+    kmTolerance: 40000,
+    yearTolerance: 2
+  });
+
+  // Scraper les 2 URLs
+  const [prices1, prices2] = await Promise.all([
+    scrapeLeBonCoinPrices(url1),
+    scrapeLeBonCoinPrices(url2)
+  ]);
+
+  console.log(`Found ${prices1.length} prices in tab 1`);
+  console.log(`Found ${prices2.length} prices in tab 2`);
+
+  // Sélectionner les 5 premiers prix selon la logique demandée
+  let selectedPrices = [];
+  if (prices1.length > 0) {
+    // Prendre les prix de l'onglet 1 (max 5)
+    selectedPrices = prices1.slice(0, 5);
+  } else if (prices2.length > 0) {
+    // Sinon prendre les 5 premiers de l'onglet 2
+    selectedPrices = prices2.slice(0, 5);
+  }
+
+  if (selectedPrices.length === 0) {
+    throw new Error('Aucun prix trouvé sur LeBonCoin');
+  }
+
+  // Calculer la marge moyenne
+  const avgMarketPrice = selectedPrices.reduce((sum, p) => sum + p, 0) / selectedPrices.length;
+  const margin = avgMarketPrice - vehicleData.price;
+  const minPrice = Math.min(...[...prices1, ...prices2]);
+  const maxPrice = Math.max(...[...prices1, ...prices2]);
+  const totalAds = prices1.length + prices2.length;
+
+  return {
+    margin,
+    avgMarketPrice,
+    alcopaPrice: vehicleData.price,
+    top5Prices: selectedPrices,
+    minPrice,
+    maxPrice,
+    totalAds,
+    pricesTab1: prices1.length,
+    pricesTab2: prices2.length
+  };
+}
+
+async function scrapeLeBonCoinPrices(url) {
+  try {
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'fr-FR,fr;q=0.9'
+      }
+    });
+
+    if (!response.ok) {
+      return [];
+    }
+
+    const html = await response.text();
+
+    // Parser le HTML pour extraire les prix
+    const nextDataMatch = html.match(/<script id="__NEXT_DATA__"[^>]*>(.*?)<\/script>/s);
+
+    if (nextDataMatch) {
+      try {
+        const nextData = JSON.parse(nextDataMatch[1]);
+        const ads = nextData?.props?.pageProps?.searchData?.ads ||
+                    nextData?.props?.pageProps?.ads ||
+                    nextData?.props?.initialState?.ads || [];
+
+        // Extraire les prix et les trier par ordre décroissant
+        const prices = ads
+          .map(ad => ad.price?.[0] || ad.price || 0)
+          .filter(p => p > 0)
+          .sort((a, b) => b - a); // Tri décroissant
+
+        return prices;
+      } catch (e) {
+        console.error('Error parsing __NEXT_DATA__:', e);
+      }
+    }
+
+    // Fallback: extraire les prix avec regex
+    const priceMatches = html.match(/"price":\s*(\d+)/g);
+    if (priceMatches) {
+      const prices = priceMatches
+        .map(m => parseInt(m.match(/\d+/)[0]))
+        .filter(p => p > 0)
+        .sort((a, b) => b - a);
+      return prices;
+    }
+
+    return [];
+  } catch (error) {
+    console.error('Error scraping LeBonCoin prices:', error);
+    return [];
+  }
+}
+
+function showMarginModal(marginData, vehicleData) {
+  removeExistingModal();
+
+  const modal = document.createElement('div');
+  modal.className = 'alcopa-results-modal';
+  modal.style.cssText = `
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    z-index: 999999 !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    background: rgba(0, 0, 0, 0.5) !important;
+  `;
+
+  // Calculer les frais Alcopa
+  const fees = calculateFees(marginData.alcopaPrice);
+  const marginWithFees = marginData.avgMarketPrice - fees.total;
+  const isPositiveWithFees = marginWithFees >= 0;
+
+  modal.innerHTML = `
+    <div class="modal-content" style="position: relative; z-index: 10; width: 90%; max-width: 500px; background: white; border-radius: 12px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3); overflow: hidden; display: flex; flex-direction: column;">
+      <div class="modal-header" style="display: flex; justify-content: space-between; align-items: center; padding: 20px 24px; background: linear-gradient(135deg, ${isPositiveWithFees ? '#4CAF50' : '#f44336'} 0%, ${isPositiveWithFees ? '#388E3C' : '#c62828'} 100%); color: white;">
+        <h2 style="margin: 0; font-size: 22px; font-weight: 600;">Marge LeBonCoin</h2>
+        <button class="close-btn" style="background: none; border: none; color: white; font-size: 32px; cursor: pointer; padding: 0; width: 32px; height: 32px;">×</button>
+      </div>
+      <div class="modal-body" style="padding: 24px;">
+        <div style="text-align: center; margin-bottom: 24px;">
+          <div style="font-size: 48px; font-weight: 700; color: ${isPositiveWithFees ? '#4CAF50' : '#f44336'};">
+            ${isPositiveWithFees ? '+' : ''}${formatPrice(marginWithFees)}
+          </div>
+          <div style="font-size: 16px; color: #666; margin-top: 8px;">
+            Marge nette (après frais)
+          </div>
+        </div>
+
+        <div style="margin-bottom: 20px; padding: 12px; background: #f5f5f5; border-radius: 8px; text-align: center;">
+          <div style="font-size: 18px; font-weight: 600; color: #333;">
+            ${marginData.totalAds} annonces
+          </div>
+          <div style="font-size: 13px; color: #666; margin-top: 4px;">
+            ${marginData.pricesTab1} prix (onglet 1) + ${marginData.pricesTab2} prix (onglet 2)
+          </div>
+        </div>
+
+        <div>
+          <h3 style="margin: 0 0 12px 0; font-size: 16px; font-weight: 600; color: #333;">Top 5 Prix</h3>
+          <div style="display: flex; flex-direction: column; gap: 8px;">
+            ${marginData.top5Prices.map((price, i) => `
+              <div style="display: flex; justify-content: space-between; padding: 10px 14px; background: #f5f5f5; border-radius: 6px;">
+                <span style="font-weight: 500; color: #666;">#${i + 1}</span>
+                <span style="font-weight: 600; color: #2196F3; font-size: 15px;">${formatPrice(price)}</span>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  modal.querySelector('.close-btn').addEventListener('click', () => modal.remove());
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) modal.remove();
+  });
+
+  const escHandler = (e) => {
+    if (e.key === 'Escape') {
+      modal.remove();
+      document.removeEventListener('keydown', escHandler);
+    }
+  };
+  document.addEventListener('keydown', escHandler);
+
+  document.body.appendChild(modal);
+}
+
+// ==============================
 // Calcul des frais Alcopa
 // ==============================
 
@@ -826,11 +1381,14 @@ function createFeesButton(vehicleData) {
   button.className = 'comparison-icon calculator-icon';
   button.dataset.vehicle = JSON.stringify(vehicleData);
 
-  const img = document.createElement('img');
-  img.src = chrome.runtime.getURL('assets/icons/calculator-icon.svg');
-  img.alt = 'Calcul frais TTC';
+  // Calculer les frais et afficher le prix TTC directement
+  const fees = calculateFees(vehicleData.price);
+  const priceText = document.createElement('span');
+  priceText.className = 'fees-price-value';
+  priceText.textContent = formatPrice(fees.total);
+  priceText.title = 'Prix TTC avec frais';
 
-  button.appendChild(img);
+  button.appendChild(priceText);
 
   // Hover : afficher le détail des frais directement
   let hoverPopup = null;

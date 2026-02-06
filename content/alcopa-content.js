@@ -96,6 +96,17 @@ function processDetailPage(showFees = true) {
         }
       }
 
+      // Fallback : avant la section "Commentaires"
+      if (!inserted) {
+        const commentairesSection = Array.from(document.querySelectorAll('h2, h3, h4, .title')).find(
+          el => el.textContent.trim().toLowerCase() === 'commentaires'
+        );
+        if (commentairesSection) {
+          commentairesSection.insertAdjacentElement('beforebegin', wrapper);
+          inserted = true;
+        }
+      }
+
       // Fallback : avant le bouton "Contrôle technique" ou après le tableau de caractéristiques
       if (!inserted) {
         const ctButton = Array.from(document.querySelectorAll('a, button')).find(

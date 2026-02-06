@@ -101,3 +101,94 @@ article .alcopa-comparison-icons {
   background: #efe;
   border: 1px solid #8f8;
 }
+
+/* Margin indicator icon */
+.margin-icon {
+  width: auto;
+  min-width: 80px;
+  max-width: 140px;
+  height: 32px;
+  padding: 6px 12px;
+  font-weight: 700;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid;
+  border-radius: 6px;
+  box-sizing: border-box;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: all 0.2s ease;
+}
+
+.margin-icon.positive {
+  color: #2E7D32;
+  background: linear-gradient(135deg, #E8F5E9 0%, #C8E6C9 100%);
+  border-color: #4CAF50;
+}
+
+.margin-icon.negative {
+  color: #C62828;
+  background: linear-gradient(135deg, #FFEBEE 0%, #FFCDD2 100%);
+  border-color: #EF5350;
+}
+
+.margin-icon:hover {
+  transform: scale(1.05);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+
+.margin-loading {
+  font-size: 18px;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.margin-error {
+  font-size: 18px;
+  color: #f44336;
+}
+
+/* Fees calculator button with TTC price */
+.calculator-icon {
+  width: auto;
+  min-width: 80px;
+  max-width: 140px;
+  height: 32px;
+  padding: 6px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #E3F2FD 0%, #BBDEFB 100%);
+  border: 2px solid #1976D2;
+  border-radius: 6px;
+  box-sizing: border-box;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: all 0.2s ease;
+}
+
+.calculator-icon:hover {
+  transform: scale(1.05);
+  box-shadow: 0 4px 12px rgba(25, 118, 210, 0.3);
+  background: linear-gradient(135deg, #BBDEFB 0%, #90CAF9 100%);
+}
+
+.fees-price-value {
+  color: #0D47A1;
+  font-weight: 700;
+  font-size: 12px;
+  display: block;
+  width: 100%;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
