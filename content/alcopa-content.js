@@ -1,0 +1,525 @@
+// Alcopa Content Script - Extracts vehicle data and injects comparison icons
+
+console.log('Alcopa Price Comparison extension loaded');
+
+// Initialize when DOM is ready
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initialize);
+} else {
+  initialize();
+}
+
+// Détecter si la page est une vente web (frais déjà inclus)
+function isWebSalePage() {
+  // Sur les pages detail, vérifier le breadcrumb
+  const breadcrumbLinks = document.querySelectorAll('.breadcrumb a');
+  for (const link of breadcrumbLinks) {
+    const href = link.getAttribute('href') || '';
+    if (href.includes('/vente-encheres-en-ligne/') || href.includes('/salle-de-vente-web')) {
+      return true;
+    }
+  }
+  // Sur les pages liste
+  if (window.location.pathname.includes('/vente-encheres-en-ligne/')) {
+    return true;
+  }
+  return false;
+}
+
+function initialize() {
+  console.log('Initializing Alcopa Price Comparison...');
+
+  // Detect page type
+  const isDetailPage = (window.location.pathname.includes('/voiture-occasion/') ||
+                        window.location.pathname.includes('/utilitaire-occasion/')) &&
+                       !window.location.pathname.endsWith('/voiture-occasion') &&
+                       !window.location.pathname.endsWith('/utilitaire-occasion');
+  const isListPage = window.location.pathname.includes('/salle-de-vente-encheres/') ||
+                     window.location.pathname.includes('/vente-encheres-en-ligne/');
+
+  console.log(`Page type - Detail: ${isDetailPage}, List: ${isListPage}`);
+
+  // Detect if this is a "vente web" (fees already included)
+  const isWebSale = isWebSalePage();
+  console.log(`Web sale: ${isWebSale}`);
+
+  if (isDetailPage) {
+    // Single vehicle detail page
+    processDetailPage(!isWebSale);
+  } else if (isListPage) {
+    // Multiple vehicles list page
+    const isWebList = window.location.pathname.includes('/vente-encheres-en-ligne/');
+    processVehicles(!isWebList);
+    // Watch for dynamically loaded vehicles
+    observePageChanges(!isWebList);
+  } else {
+    console.log('Unknown page type, trying to process vehicles...');
+    processVehicles(true);
+    observePageChanges(true);
+  }
+}
+
+function processDetailPage(showFees = true) {
+  console.log('Processing detail page... showFees:', showFees);
+
+  // Check if icons already injected
+  if (document.querySelector('.alcopa-comparison-icons')) {
+    console.log('Icons already injected');
+    return;
+  }
+
+  try {
+    // Extract vehicle data from the detail page
+    const vehicleData = extractDetailPageData();
+
+    console.log('Extracted vehicle data:', vehicleData);
+
+    if (vehicleData && vehicleData.brand && vehicleData.model) {
+      // Create comparison icons
+      const iconsContainer = createComparisonIcons(vehicleData, document.body, showFees);
+
+      // Icônes centrées, insérées au-dessus des images (section Défauts esthétiques)
+      const wrapper = document.createElement('div');
+      wrapper.style.cssText = 'display: flex; justify-content: center; padding: 15px 0; z-index: 1000;';
+      wrapper.appendChild(iconsContainer);
+
+      // Chercher la section "Défauts esthétiques" ou les images du véhicule
+      let inserted = false;
+      const allHeadings = document.querySelectorAll('h1, h2, h3, h4, h5, h6');
+      for (const heading of allHeadings) {
+        if (heading.textContent.trim().toLowerCase().includes('défaut') ||
+            heading.textContent.trim().toLowerCase().includes('esthétique') ||
+            heading.textContent.trim().toLowerCase().includes('defaut')) {
+          heading.insertAdjacentElement('beforebegin', wrapper);
+          inserted = true;
+          break;
+        }
+      }
+
+      // Fallback : avant la section "Commentaires"
+      if (!inserted) {
+        const commentairesSection = Array.from(document.querySelectorAll('h2, h3, h4, .title')).find(
+          el => el.textContent.trim().toLowerCase() === 'commentaires'
+        );
+        if (commentairesSection) {
+          commentairesSection.insertAdjacentElement('beforebegin', wrapper);
+          inserted = true;
+        }
+      }
+
+      // Fallback : avant le bouton "Contrôle technique" ou après le tableau de caractéristiques
+      if (!inserted) {
+        const ctButton = Array.from(document.querySelectorAll('a, button')).find(
+          el => el.textContent.trim().toLowerCase().includes('contrôle technique') ||
+                el.textContent.trim().toLowerCase().includes('controle technique')
+        );
+        if (ctButton) {
+          const ctParent = ctButton.closest('div, p, section') || ctButton.parentElement;
+          if (ctParent) {
+            ctParent.insertAdjacentElement('afterend', wrapper);
+            inserted = true;
+          }
+        }
+      }
+
+      // Dernier fallback : position fixe en bas
+      if (!inserted) {
+        wrapper.style.cssText = 'position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 10000;';
+        document.body.appendChild(wrapper);
+      }
+      console.log(`Injected icons for: ${vehicleData.brand} ${vehicleData.model}`);
+
+      // Injecter le prix total TTC à côté du prix (sauf vente web)
+      if (showFees && vehicleData.price) {
+        injectTotalPriceLabel(vehicleData.price);
+      }
+    } else {
+      console.warn('Incomplete vehicle data:', vehicleData);
+    }
+  } catch (error) {
+    console.error('Error processing detail page:', error);
+  }
+}
+
+function processVehicles(showFees = true) {
+  // Find all vehicle cards on the page
+  const vehicleCards = findVehicleCards();
+
+  console.log(`Found ${vehicleCards.length} vehicle cards, showFees: ${showFees}`);
+
+  vehicleCards.forEach((card, index) => {
+    // Check if icons already injected
+    if (card.querySelector('.alcopa-comparison-icons')) {
+      return;
+    }
+
+    try {
+      // Extract vehicle data from the card
+      const vehicleData = extractVehicleData(card);
+
+      if (vehicleData && vehicleData.brand && vehicleData.model) {
+        // Create and inject comparison icons
+        const iconsContainer = createComparisonIcons(vehicleData, card, showFees);
+        injectIcons(card, iconsContainer);
+
+        console.log(`Injected icons for: ${vehicleData.brand} ${vehicleData.model}`);
+      } else {
+        console.warn('Incomplete vehicle data for card', index, vehicleData);
+      }
+    } catch (error) {
+      console.error('Error processing vehicle card', index, error);
+    }
+  });
+}
+
+function findVehicleCards() {
+  // Try multiple selectors to find vehicle cards
+  // These will need to be adjusted based on actual Alcopa DOM structure
+
+  let cards = [];
+
+  // Try common selectors for vehicle listings
+  const selectors = [
+    'article[class*="vehicle"]',
+    'div[class*="vehicle-card"]',
+    'div[class*="lot"]',
+    // Chercher tous les types de véhicules (tourisme + utilitaires + autres)
+    'a[href*="/voiture-occasion/"], a[href*="/utilitaire-occasion/"]',
+    '[data-vehicle]',
+    '.vehicle-item',
+    '.lot-item'
+  ];
+
+  for (const selector of selectors) {
+    cards = document.querySelectorAll(selector);
+    if (cards.length > 0) {
+      console.log(`Found ${cards.length} vehicle cards using selector: ${selector}`);
+      break;
+    }
+  }
+
+  return Array.from(cards);
+}
+
+function extractDetailPageData() {
+  const data = {
+    brand: null,
+    model: null,
+    finition: null,
+    registration: null,
+    energyType: null,
+    mileage: null,
+    vin: null,
+    transmission: null,
+    price: null,
+    year: null,
+    co2: null,
+    engineSize: null,
+    type: null,        // Type de véhicule (UTILITAIRES, etc.)
+    carrosserie: null, // Carrosserie (CTTE, etc.)
+    alcopa_url: window.location.href
+  };
+
+  // Extract from title (e.g., "CITROEN JUMPER FOURGON")
+  const titleElement = document.querySelector('h1, .vehicle-title, [class*="titre"]');
+  if (titleElement) {
+    const titleText = titleElement.textContent.trim();
+    const brandModelMatch = parseBrandModel(titleText);
+    if (brandModelMatch) {
+      data.brand = brandModelMatch.brand;
+      data.model = brandModelMatch.model;
+      data.finition = brandModelMatch.finition;
+    }
+  }
+
+  // Extract from characteristics table
+  const tableRows = document.querySelectorAll('table tr, .table tr');
+  tableRows.forEach(row => {
+    const cells = row.querySelectorAll('td, th');
+    if (cells.length >= 2) {
+      const label = cells[0].textContent.trim().toLowerCase();
+      const value = cells[1].textContent.trim();
+
+      if (label.includes('marque')) {
+        data.brand = value;
+      } else if (label.includes('modèle') || label.includes('modele')) {
+        data.model = value;
+      } else if (label.includes('finition')) {
+        data.finition = value;
+      } else if (label.includes('kilométrage') || label.includes('kilometrage')) {
+        const km = value.replace(/\s/g, '').match(/(\d+)/);
+        if (km) data.mileage = parseInt(km[1]);
+      } else if (label.includes('mise en circulation')) {
+        const dateMatch = value.match(/(\d{2})\/(\d{2})\/(\d{4})/);
+        if (dateMatch) {
+          data.year = parseInt(dateMatch[3]);
+          data.registration = `${dateMatch[3]}-${dateMatch[2]}-${dateMatch[1]}`;
+        }
+      } else if (label.includes('énergie') || label.includes('energie')) {
+        data.energyType = value;
+      } else if (label.includes('numéro de série') || label.includes('immatriculation')) {
+        data.vin = value;
+      } else if (label.includes('boite de vitesse') || label.includes('boîte de vitesse')) {
+        data.transmission = value;
+      } else if (label === 'type') {
+        data.type = value;
+      } else if (label.includes('carrosserie')) {
+        data.carrosserie = value;
+      } else if (label.includes('cylindrée') || label.includes('cylindree')) {
+        data.engineSize = value;
+      } else if (label.includes('co2')) {
+        data.co2 = value;
+      }
+    }
+  });
+
+  // Extract price - try multiple methods
+  // Method 1: Look for "Mise à prix : X €" or "Enchère courante : X €" text pattern in page
+  const pageText = document.body.textContent;
+
+  // Try "Enchère courante" first (live auction)
+  let priceTextMatch = pageText.match(/Enchère\s+courante\s*:\s*([\d\s]+)\s*€/i);
+  if (priceTextMatch) {
+    const priceNum = priceTextMatch[1].replace(/\s/g, '');
+    data.price = parseInt(priceNum);
+    console.log('Extracted price from "Enchère courante":', data.price);
+  }
+
+  // Try "Mise à prix" (starting bid)
+  if (!data.price) {
+    priceTextMatch = pageText.match(/Mise\s+à\s+prix\s*:\s*([\d\s]+)\s*€/i);
+    if (priceTextMatch) {
+      const priceNum = priceTextMatch[1].replace(/\s/g, '');
+      data.price = parseInt(priceNum);
+      console.log('Extracted price from "Mise à prix":', data.price);
+    }
+  }
+
+  // Method 2: Try input fields near "Mise à prix"
+  if (!data.price) {
+    const priceInputs = document.querySelectorAll('input[type="text"]');
+    priceInputs.forEach(input => {
+      const parent = input.parentElement;
+      if (parent && parent.textContent.includes('Mise à prix')) {
+        const value = input.value || input.placeholder;
+        if (value) {
+          const priceMatch = value.replace(/\s/g, '').match(/(\d+)/);
+          if (priceMatch) {
+            data.price = parseInt(priceMatch[1]);
+            console.log('Extracted price from input:', data.price);
+          }
+        }
+      }
+    });
+  }
+
+  // Method 3: Look in table rows
+  if (!data.price) {
+    const tableRows = document.querySelectorAll('table tr, .table tr');
+    tableRows.forEach(row => {
+      const cells = row.querySelectorAll('td, th');
+      if (cells.length >= 2) {
+        const label = cells[0].textContent.trim().toLowerCase();
+        const value = cells[1].textContent.trim();
+        if (label.includes('mise à prix') || label.includes('prix')) {
+          const priceMatch = value.replace(/\s/g, '').match(/(\d+)/);
+          if (priceMatch) {
+            data.price = parseInt(priceMatch[1]);
+            console.log('Extracted price from table:', data.price);
+          }
+        }
+      }
+    });
+  }
+
+  // Fallback: search remaining data in page text (pageText already defined above)
+  if (!data.mileage) {
+    const kmMatch = pageText.match(/(\d+\s*\d+)\s*KM/i);
+    if (kmMatch) {
+      data.mileage = parseInt(kmMatch[1].replace(/\s/g, ''));
+    }
+  }
+
+  if (!data.energyType) {
+    const energyMatch = pageText.match(/Énergie\s*:\s*(\w+)/i);
+    if (energyMatch) {
+      data.energyType = energyMatch[1];
+    }
+  }
+
+  return data;
+}
+
+function extractVehicleData(cardElement) {
+  const data = {
+    brand: null,
+    model: null,
+    finition: null,
+    registration: null,
+    energyType: null,
+    mileage: null,
+    vin: null,
+    transmission: null,
+    price: null,
+    year: null,
+    co2: null,
+    engineSize: null,
+    alcopa_url: window.location.href
+  };
+
+  // Extract text content from the card
+  const textContent = cardElement.textContent || '';
+
+  // Try to extract price
+  data.price = extractPrice(cardElement);
+
+  // Try to extract brand and model from title/heading
+  const titleElement = cardElement.querySelector('h2, h3, h4, .title, [class*="title"]');
+  if (titleElement) {
+    const titleText = titleElement.textContent.trim();
+    const brandModelMatch = parseBrandModel(titleText);
+    if (brandModelMatch) {
+      data.brand = brandModelMatch.brand;
+      data.model = brandModelMatch.model;
+      data.finition = brandModelMatch.finition;
+    }
+  }
+
+  // Try to extract mileage
+  const mileageMatch = textContent.match(/([\d\s]+)\s*km/i);
+  if (mileageMatch) {
+    data.mileage = parseInt(mileageMatch[1].replace(/\s/g, ''));
+  }
+
+  // Try to extract year from registration date
+  const yearMatch = textContent.match(/(?:1ère mise|mise en circulation).*?(\d{4})/i) ||
+                    textContent.match(/(\d{4})/);
+  if (yearMatch) {
+    const year = parseInt(yearMatch[1]);
+    if (year >= 1900 && year <= new Date().getFullYear() + 1) {
+      data.year = year;
+      data.registration = `${year}-01-01`;
+    }
+  }
+
+  // Try to extract energy type
+  const energyMatch = textContent.match(/\b(Diesel|Essence|Électrique|Hybride|GPL|EH|E)\b/i);
+  if (energyMatch) {
+    data.energyType = energyMatch[1];
+  }
+
+  // Try to extract transmission
+  if (textContent.match(/automatique/i)) {
+    data.transmission = 'AUTOMATIQUE';
+  } else if (textContent.match(/manuelle/i)) {
+    data.transmission = 'MANUELLE';
+  }
+
+  // Try to get link to detail page (tourisme ou utilitaire)
+  const detailLink = cardElement.querySelector('a[href*="/voiture-occasion/"], a[href*="/utilitaire-occasion/"]')
+                  || cardElement.closest('a[href*="/voiture-occasion/"], a[href*="/utilitaire-occasion/"]');
+  if (detailLink) {
+    data.alcopa_url = detailLink.href;
+  }
+
+  return data;
+}
+
+function extractPrice(element) {
+  // Try to find price element
+  const priceElement = element.querySelector('[class*="price"], .prix, [class*="montant"]');
+
+  if (priceElement) {
+    const priceText = priceElement.textContent;
+    const priceMatch = priceText.match(/([\d\s]+)/);
+    if (priceMatch) {
+      return parseInt(priceMatch[1].replace(/\s/g, ''));
+    }
+  }
+
+  // Fallback: search in all text
+  const textContent = element.textContent;
+  const priceMatches = textContent.match(/(\d+\s*\d*)\s*€/g);
+  if (priceMatches && priceMatches.length > 0) {
+    // Take the largest number (likely the main price)
+    const prices = priceMatches.map(p => parseInt(p.replace(/\s/g, '').replace('€', '')));
+    return Math.max(...prices);
+  }
+
+  return null;
+}
+
+function parseBrandModel(titleText) {
+  // Common car brands
+  const brands = [
+    'RENAULT', 'PEUGEOT', 'CITROEN', 'VOLKSWAGEN', 'BMW', 'MERCEDES', 'AUDI',
+    'TOYOTA', 'NISSAN', 'FORD', 'OPEL', 'FIAT', 'SEAT', 'SKODA', 'HYUNDAI',
+    'KIA', 'MAZDA', 'HONDA', 'VOLVO', 'LAND ROVER', 'JAGUAR', 'PORSCHE',
+    'TESLA', 'DACIA', 'ALFA ROMEO', 'JEEP', 'MINI', 'SMART', 'DS', 'MG'
+  ];
+
+  const upperTitle = titleText.toUpperCase();
+
+  for (const brand of brands) {
+    if (upperTitle.includes(brand)) {
+      // Found brand, extract model
+      const afterBrand = titleText.substring(upperTitle.indexOf(brand) + brand.length).trim();
+
+      // Model is typically the first word(s) after brand
+      const modelMatch = afterBrand.match(/^([\w\d-]+(?:\s+[\w\d-]+)?)/);
+
+      if (modelMatch) {
+        const model = modelMatch[1].trim();
+        const finition = afterBrand.substring(model.length).trim();
+
+        return {
+          brand: brand,
+          model: model,
+          finition: finition || null
+        };
+      }
+    }
+  }
+
+  return null;
+}
+
+function injectIcons(cardElement, iconsContainer) {
+  // Make the card position relative if needed
+  const position = window.getComputedStyle(cardElement).position;
+  if (position === 'static') {
+    cardElement.style.position = 'relative';
+  }
+
+  // Insert icons container
+  cardElement.appendChild(iconsContainer);
+}
+
+function observePageChanges(showFees = true) {
+  // Watch for new vehicle cards being added (pagination, infinite scroll)
+  const observer = new MutationObserver((mutations) => {
+    let shouldProcess = false;
+
+    for (const mutation of mutations) {
+      if (mutation.addedNodes.length > 0) {
+        shouldProcess = true;
+        break;
+      }
+    }
+
+    if (shouldProcess) {
+      // Debounce to avoid processing too frequently
+      clearTimeout(observePageChanges.timeout);
+      observePageChanges.timeout = setTimeout(() => {
+        processVehicles(showFees);
+      }, 500);
+    }
+  });
+
+  observer.observe(document.body, {
+    childList: true,
+    subtree: true
+  });
+
+  console.log('Observing page for new vehicle cards...');
+}
