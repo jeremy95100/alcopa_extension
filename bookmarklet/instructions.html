@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Alcopa → LeBonCoin - Bookmarklet</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      max-width: 600px;
+      margin: 40px auto;
+      padding: 20px;
+      background: #f5f5f5;
+    }
+    h1 { color: #333; }
+    .bookmarklet-link {
+      display: inline-block;
+      padding: 15px 30px;
+      background: linear-gradient(135deg, #ff6600, #ff8533);
+      color: white;
+      text-decoration: none;
+      border-radius: 10px;
+      font-size: 18px;
+      font-weight: bold;
+      margin: 20px 0;
+      box-shadow: 0 4px 15px rgba(255,102,0,0.3);
+    }
+    .bookmarklet-link:hover {
+      background: linear-gradient(135deg, #ff8533, #ff6600);
+    }
+    .step {
+      background: white;
+      padding: 15px;
+      margin: 10px 0;
+      border-radius: 8px;
+      border-left: 4px solid #ff6600;
+    }
+    .step h3 {
+      margin: 0 0 10px 0;
+      color: #ff6600;
+    }
+    code {
+      background: #eee;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 14px;
+    }
+    .warning {
+      background: #fff3cd;
+      border: 1px solid #ffc107;
+      padding: 15px;
+      border-radius: 8px;
+      margin: 20px 0;
+    }
+  </style>
+</head>
+<body>
+  <h1>🚗 Alcopa → LeBonCoin</h1>
+  <p>Ce bookmarklet ouvre automatiquement LeBonCoin avec les filtres du véhicule Alcopa que vous consultez.</p>
+
+  <h2>Le Bookmarklet</h2>
+  <p>Glissez ce bouton dans vos favoris :</p>
+
+  <a class="bookmarklet-link" href="javascript:(function(){if(!window.location.hostname.includes('alcopa-auction.fr')){alert('Uniquement sur alcopa-auction.fr');return}var d={};var rows=document.querySelectorAll('tr,[class*=detail]');rows.forEach(function(r){var t=r.textContent.toLowerCase();if(t.includes('circulation')||t.includes('année')){var m=r.textContent.match(/(\d{4})/);if(m)d.year=parseInt(m[1])}if(t.includes('kilom')||t.includes('km')){var m=r.textContent.replace(/\s/g,'').match(/(\d+)\s*km/i);if(m)d.mileage=parseInt(m[1])}if(t.includes('énergie')||t.includes('carburant')){if(t.includes('diesel'))d.fuel='2';else if(t.includes('essence'))d.fuel='1';else if(t.includes('hybride'))d.fuel='3';else if(t.includes('élec'))d.fuel='4'}if(t.includes('boîte')){if(t.includes('auto'))d.gearbox='2';else if(t.includes('manuel'))d.gearbox='1'}});var h1=document.querySelector('h1');if(h1){var w=h1.textContent.trim().split(/\s+/);d.brand=w[0];d.model=w[1]||''}var p=new URLSearchParams();p.set('category','2');if(d.brand)p.set('text',d.brand+(d.model?' '+d.model:''));if(d.year)p.set('regdate',(d.year-2)+'-'+(d.year+2));if(d.mileage)p.set('mileage',Math.max(0,d.mileage-20000)+'-'+(d.mileage+20000));if(d.fuel)p.set('fuel',d.fuel);if(d.gearbox)p.set('gearbox',d.gearbox);p.set('sort','price');p.set('order','asc');window.open('https://www.leboncoin.fr/recherche?'+p.toString(),'_blank');var p2=new URLSearchParams();p2.set('category','2');if(d.brand){p2.set('u_car_brand',d.brand.toUpperCase());if(d.model){var mf=d.model.split(/\s+/)[0];p2.set('u_car_model',d.brand.toUpperCase()+'_'+mf.charAt(0).toUpperCase()+mf.slice(1).toLowerCase())}}if(d.year)p2.set('regdate',(d.year-2)+'-'+(d.year+2));if(d.mileage)p2.set('mileage',Math.max(0,d.mileage-20000)+'-'+(d.mileage+20000));if(d.fuel)p2.set('fuel',d.fuel);if(d.gearbox)p2.set('gearbox',d.gearbox);p2.set('sort','price');p2.set('order','asc');setTimeout(function(){window.open('https://www.leboncoin.fr/recherche?'+p2.toString(),'_blank')},300)})();">
+    🔍 Alcopa → LBC
+  </a>
+
+  <h2>Installation sur iPhone/iPad</h2>
+
+  <div class="step">
+    <h3>Étape 1 : Ajouter aux favoris</h3>
+    <p>Sur cette page, appuyez sur le bouton <strong>Partager</strong> (carré avec flèche) puis <strong>"Ajouter un signet"</strong>.</p>
+  </div>
+
+  <div class="step">
+    <h3>Étape 2 : Modifier le favori</h3>
+    <p>Allez dans vos <strong>Favoris</strong>, trouvez le signet que vous venez d'ajouter, et appuyez sur <strong>Modifier</strong>.</p>
+  </div>
+
+  <div class="step">
+    <h3>Étape 3 : Copier le code</h3>
+    <p>Remplacez l'URL du signet par ce code :</p>
+    <textarea id="code" style="width:100%;height:100px;font-size:12px;" readonly>javascript:(function(){if(!window.location.hostname.includes('alcopa-auction.fr')){alert('Uniquement sur alcopa-auction.fr');return}var d={};var rows=document.querySelectorAll('tr,[class*=detail]');rows.forEach(function(r){var t=r.textContent.toLowerCase();if(t.includes('circulation')||t.includes('année')){var m=r.textContent.match(/(\d{4})/);if(m)d.year=parseInt(m[1])}if(t.includes('kilom')||t.includes('km')){var m=r.textContent.replace(/\s/g,'').match(/(\d+)\s*km/i);if(m)d.mileage=parseInt(m[1])}if(t.includes('énergie')||t.includes('carburant')){if(t.includes('diesel'))d.fuel='2';else if(t.includes('essence'))d.fuel='1';else if(t.includes('hybride'))d.fuel='3';else if(t.includes('élec'))d.fuel='4'}if(t.includes('boîte')){if(t.includes('auto'))d.gearbox='2';else if(t.includes('manuel'))d.gearbox='1'}});var h1=document.querySelector('h1');if(h1){var w=h1.textContent.trim().split(/\s+/);d.brand=w[0];d.model=w[1]||''}var p=new URLSearchParams();p.set('category','2');if(d.brand)p.set('text',d.brand+(d.model?' '+d.model:''));if(d.year)p.set('regdate',(d.year-2)+'-'+(d.year+2));if(d.mileage)p.set('mileage',Math.max(0,d.mileage-20000)+'-'+(d.mileage+20000));if(d.fuel)p.set('fuel',d.fuel);if(d.gearbox)p.set('gearbox',d.gearbox);p.set('sort','price');p.set('order','asc');window.open('https://www.leboncoin.fr/recherche?'+p.toString(),'_blank');var p2=new URLSearchParams();p2.set('category','2');if(d.brand){p2.set('u_car_brand',d.brand.toUpperCase());if(d.model){var mf=d.model.split(/\s+/)[0];p2.set('u_car_model',d.brand.toUpperCase()+'_'+mf.charAt(0).toUpperCase()+mf.slice(1).toLowerCase())}}if(d.year)p2.set('regdate',(d.year-2)+'-'+(d.year+2));if(d.mileage)p2.set('mileage',Math.max(0,d.mileage-20000)+'-'+(d.mileage+20000));if(d.fuel)p2.set('fuel',d.fuel);if(d.gearbox)p2.set('gearbox',d.gearbox);p2.set('sort','price');p2.set('order','asc');setTimeout(function(){window.open('https://www.leboncoin.fr/recherche?'+p2.toString(),'_blank')},300)})();</textarea>
+    <button onclick="document.getElementById('code').select();document.execCommand('copy');alert('Copié !');" style="margin-top:10px;padding:10px 20px;font-size:16px;">📋 Copier le code</button>
+  </div>
+
+  <div class="step">
+    <h3>Étape 4 : Utilisation</h3>
+    <p>Sur une fiche véhicule <strong>alcopa-auction.fr</strong>, ouvrez vos favoris et cliquez sur <strong>"Alcopa → LBC"</strong>. LeBonCoin s'ouvrira avec les bons filtres !</p>
+  </div>
+
+  <div class="warning">
+    <strong>⚠️ Note iOS :</strong> Sur iPhone, les pop-ups peuvent être bloqués. Si LeBonCoin ne s'ouvre pas, autorisez les pop-ups dans Réglages → Safari → Bloquer les pop-ups → Désactivé.
+  </div>
+
+</body>
+</html>

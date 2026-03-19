@@ -718,53 +718,64 @@ const LACENTRALE_BASE_URL = 'https://www.lacentrale.fr';
 async function handleMarginCalculation(vehicleData) {
   console.log('📊 Calculating margin from LeBonCoin...');
   console.log('Vehicle data:', vehicleData);
+  const marginSampleSize = 10;
 
-  // Construire les 2 URLs
+  // Construire les 3 URLs
   const url1 = buildLeBonCoinUrlForMargin(vehicleData);
   const url2 = buildLeBonCoinGeneralUrlWithStrategyForMargin(vehicleData, {
     modelType: 'finitionThreeWords',
     kmTolerance: 20000,
     yearTolerance: 2
   });
+  const url3 = buildLeBonCoinBrandModelOnlyUrlForMargin(vehicleData);
 
   console.log('URL 1 (filtered):', url1);
   console.log('URL 2 (fallback):', url2);
+  console.log('URL 3 (brand+model only):', url3);
 
-  // Scraper les 2 URLs
-  const [prices1Raw, prices2Raw] = await Promise.all([
+  // Scraper les 3 URLs
+  const [prices1Raw, prices2Raw, prices3Raw] = await Promise.all([
     scrapeLeBonCoinPricesOnly(url1),
-    scrapeLeBonCoinPricesOnly(url2)
+    scrapeLeBonCoinPricesOnly(url2),
+    scrapeLeBonCoinPricesOnly(url3)
   ]);
 
   console.log(`Found ${prices1Raw.length} prices in tab 1 (before outlier removal)`);
   console.log(`Found ${prices2Raw.length} prices in tab 2 (before outlier removal)`);
+  console.log(`Found ${prices3Raw.length} prices in tab 3 (before outlier removal)`);
 
   // Supprimer les outliers de chaque liste
   const prices1 = removeOutliers(prices1Raw);
   const prices2 = removeOutliers(prices2Raw);
+  const prices3 = removeOutliers(prices3Raw);
 
-  console.log(`After outlier removal: ${prices1.length} prices in tab 1, ${prices2.length} prices in tab 2`);
+  console.log(`After outlier removal: ${prices1.length} prices in tab 1, ${prices2.length} prices in tab 2, ${prices3.length} prices in tab 3`);
 
-  // Sélectionner les 5 premiers prix en privilégiant l'onglet 1
+  // Sélectionner les 10 premiers prix en privilégiant onglet 1 > onglet 2 > onglet 3
   let selectedPrices = [];
 
   // Trier les prix de chaque onglet du moins cher au plus cher
   const sortedPrices1 = prices1.sort((a, b) => a - b);
   const sortedPrices2 = prices2.sort((a, b) => a - b);
+  const sortedPrices3 = prices3.sort((a, b) => a - b);
 
-  if (sortedPrices1.length >= 5) {
-    // Si l'onglet 1 a au moins 5 résultats, prendre les 5 moins chers de l'onglet 1
-    selectedPrices = sortedPrices1.slice(0, 5);
-  } else if (sortedPrices1.length > 0) {
-    // Prendre tous les prix de l'onglet 1 et compléter avec l'onglet 2
-    const needed = 5 - sortedPrices1.length;
-    selectedPrices = [...sortedPrices1, ...sortedPrices2.slice(0, needed)];
-    // Trier le résultat final
-    selectedPrices.sort((a, b) => a - b);
-  } else {
-    // Aucun prix dans l'onglet 1, prendre les 5 moins chers de l'onglet 2
-    selectedPrices = sortedPrices2.slice(0, 5);
+  // Prendre d'abord tous les prix de l'onglet 1
+  selectedPrices = [...sortedPrices1];
+
+  // Compléter avec l'onglet 2 si besoin
+  if (selectedPrices.length < marginSampleSize) {
+    const needed = marginSampleSize - selectedPrices.length;
+    selectedPrices = [...selectedPrices, ...sortedPrices2.slice(0, needed)];
   }
+
+  // Compléter avec l'onglet 3 si besoin
+  if (selectedPrices.length < marginSampleSize) {
+    const needed = marginSampleSize - selectedPrices.length;
+    selectedPrices = [...selectedPrices, ...sortedPrices3.slice(0, needed)];
+  }
+
+  // Limiter à 10 et trier
+  selectedPrices = selectedPrices.slice(0, marginSampleSize).sort((a, b) => a - b);
 
   if (selectedPrices.length === 0) {
     throw new Error('Aucun prix trouvé sur LeBonCoin');
@@ -773,21 +784,25 @@ async function handleMarginCalculation(vehicleData) {
   // Calculer la marge moyenne
   const avgMarketPrice = selectedPrices.reduce((sum, p) => sum + p, 0) / selectedPrices.length;
   const margin = avgMarketPrice - vehicleData.price;
-  const allPrices = [...prices1, ...prices2].filter(p => p > 0);
+  const allPrices = [...prices1, ...prices2, ...prices3].filter(p => p > 0);
   const minPrice = allPrices.length > 0 ? Math.min(...allPrices) : 0;
   const maxPrice = allPrices.length > 0 ? Math.max(...allPrices) : 0;
-  const totalAds = prices1.length + prices2.length;
+  const totalAds = prices1.length + prices2.length + prices3.length;
 
   return {
     margin,
     avgMarketPrice,
     alcopaPrice: vehicleData.price,
+    top10Prices: selectedPrices,
     top5Prices: selectedPrices,
+    top10Tab3: sortedPrices3.slice(0, 10),
     minPrice,
     maxPrice,
     totalAds,
     pricesTab1: prices1.length,
-    pricesTab2: prices2.length
+    pricesTab2: prices2.length,
+    pricesTab3: prices3.length,
+    url3: url3
   };
 }
 
@@ -822,11 +837,11 @@ async function scrapeLeBonCoinPricesOnly(url) {
         const allPrices = ads.map(ad => ad.price?.[0] || ad.price || 0).filter(p => p > 0);
         console.log(`Found ${ads.length} ads with ${allPrices.length} prices:`, allPrices.sort((a, b) => a - b));
 
-        // Extraire les prix et les trier par ordre décroissant
+        // Extraire les prix et les trier par ordre croissant
         const prices = ads
           .map(ad => ad.price?.[0] || ad.price || 0)
           .filter(p => p > 0)
-          .sort((a, b) => b - a); // Tri décroissant
+          .sort((a, b) => a - b); // Tri croissant
 
         console.log(`Extracted ${prices.length} prices from ${ads.length} total ads`);
         return prices;
@@ -841,7 +856,7 @@ async function scrapeLeBonCoinPricesOnly(url) {
       const prices = priceMatches
         .map(m => parseInt(m.match(/\d+/)[0]))
         .filter(p => p > 0)
-        .sort((a, b) => b - a);
+        .sort((a, b) => a - b);
       console.log(`Extracted ${prices.length} prices from regex fallback`);
       return prices;
     }
@@ -899,6 +914,10 @@ function buildLeBonCoinUrlForMargin(vehicleData) {
   if (gearboxCode) {
     params.set('gearbox', gearboxCode);
   }
+
+  // Trier par prix croissant
+  params.set('sort', 'price');
+  params.set('order', 'asc');
 
   return `https://www.leboncoin.fr/recherche?${params.toString()}`;
 }
@@ -960,6 +979,10 @@ function buildLeBonCoinGeneralUrlWithStrategyForMargin(vehicleData, strategy) {
     params.set('gearbox', gearboxCode);
   }
 
+  // Trier par prix croissant
+  params.set('sort', 'price');
+  params.set('order', 'asc');
+
   return `https://www.leboncoin.fr/recherche?${params.toString()}`;
 }
 
@@ -990,6 +1013,62 @@ function mapGearboxToLeBonCoin(transmission) {
   };
 
   return gearboxMap[transmission.toUpperCase()] || null;
+}
+
+// Construire l'URL LeBonCoin avec marque et modèle + filtres (3ème onglet)
+// Utilise u_car_brand et u_car_model au lieu de text
+function buildLeBonCoinBrandModelOnlyUrlForMargin(vehicleData) {
+  const params = new URLSearchParams();
+
+  // Catégorie : 2 = Voitures
+  params.set('category', '2');
+
+  // Marque (format: RENAULT)
+  if (vehicleData.brand) {
+    params.set('u_car_brand', vehicleData.brand.toUpperCase());
+  }
+
+  // Modèle (format: MARQUE_Modele)
+  // Prendre seulement le premier mot du modèle
+  if (vehicleData.brand && vehicleData.model) {
+    const modelWords = vehicleData.model.trim().split(/\s+/);
+    const firstWord = modelWords[0] || vehicleData.model;
+    // Format: BRAND_Model (avec majuscule première lettre)
+    const modelFormatted = firstWord.charAt(0).toUpperCase() + firstWord.slice(1).toLowerCase();
+    params.set('u_car_model', `${vehicleData.brand.toUpperCase()}_${modelFormatted}`);
+  }
+
+  // Année : ± 2 ans
+  if (vehicleData.year) {
+    const yearMin = vehicleData.year - 2;
+    const yearMax = vehicleData.year + 2;
+    params.set('regdate', `${yearMin}-${yearMax}`);
+  }
+
+  // Kilométrage : ± 20 000 km
+  if (vehicleData.mileage) {
+    const kmMin = Math.max(0, vehicleData.mileage - 20000);
+    const kmMax = vehicleData.mileage + 20000;
+    params.set('mileage', `${kmMin}-${kmMax}`);
+  }
+
+  // Énergie
+  const fuelCode = mapEnergyToLeBonCoin(vehicleData.energyType);
+  if (fuelCode) {
+    params.set('fuel', fuelCode);
+  }
+
+  // Boîte de vitesse
+  const gearboxCode = mapGearboxToLeBonCoin(vehicleData.transmission);
+  if (gearboxCode) {
+    params.set('gearbox', gearboxCode);
+  }
+
+  // Trier par prix croissant
+  params.set('sort', 'price');
+  params.set('order', 'asc');
+
+  return `https://www.leboncoin.fr/recherche?${params.toString()}`;
 }
 
 // Supprimer les outliers (valeurs aberrantes) d'un tableau de prix

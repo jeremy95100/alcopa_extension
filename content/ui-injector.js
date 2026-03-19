@@ -146,9 +146,14 @@ async function handleIconClick(event) {
     });
     console.log('Onglet 2 (filtres élargis):', fallbackUrl);
 
-    // Ouvrir les 2 onglets en même temps (pas de setTimeout pour éviter le blocage)
+    // Onglet 3 : Recherche marque + modèle seulement (via u_car_brand et u_car_model)
+    const brandModelOnlyUrl = buildLeBonCoinBrandModelOnlyUrl(vehicleData);
+    console.log('Onglet 3 (marque + modèle seulement):', brandModelOnlyUrl);
+
+    // Ouvrir les 3 onglets en même temps
     window.open(filteredUrl, '_blank');
     window.open(fallbackUrl, '_blank');
+    window.open(brandModelOnlyUrl, '_blank');
 
     return;
   }
@@ -352,6 +357,10 @@ function buildLeBonCoinUrlWithoutFilters(vehicleData, filtersToRemove = []) {
     }
   }
 
+  // Trier par prix croissant
+  params.set('sort', 'price');
+  params.set('order', 'asc');
+
   return `https://www.leboncoin.fr/recherche?${params.toString()}`;
 }
 
@@ -409,6 +418,10 @@ function buildLeBonCoinUrlWithCustomFilters(vehicleData, options = {}) {
       params.set('gearbox', gearboxCode);
     }
   }
+
+  // Trier par prix croissant
+  params.set('sort', 'price');
+  params.set('order', 'asc');
 
   return `https://www.leboncoin.fr/recherche?${params.toString()}`;
 }
@@ -470,6 +483,10 @@ function buildLeBonCoinGeneralUrlWithStrategy(vehicleData, strategy) {
   if (gearboxCode) {
     params.set('gearbox', gearboxCode);
   }
+
+  // Trier par prix croissant
+  params.set('sort', 'price');
+  params.set('order', 'asc');
 
   return `https://www.leboncoin.fr/recherche?${params.toString()}`;
 }
@@ -536,6 +553,67 @@ async function checkLeBonCoinResults(url) {
   return count > 0;
 }
 
+// Construire l'URL LeBonCoin avec marque et modèle + filtres (3ème onglet)
+// Utilise u_car_brand et u_car_model au lieu de text
+function buildLeBonCoinBrandModelOnlyUrl(vehicleData) {
+  console.log('buildLeBonCoinBrandModelOnlyUrl - vehicleData:', vehicleData);
+  console.log('  year:', vehicleData.year);
+  console.log('  mileage:', vehicleData.mileage);
+  console.log('  energyType:', vehicleData.energyType);
+
+  const params = new URLSearchParams();
+
+  // Catégorie : 2 = Voitures
+  params.set('category', '2');
+
+  // Marque (format: RENAULT)
+  if (vehicleData.brand) {
+    params.set('u_car_brand', vehicleData.brand.toUpperCase());
+  }
+
+  // Modèle (format: MARQUE_Modele)
+  // Prendre seulement le premier mot du modèle
+  if (vehicleData.brand && vehicleData.model) {
+    const modelWords = vehicleData.model.trim().split(/\s+/);
+    const firstWord = modelWords[0] || vehicleData.model;
+    // Format: BRAND_Model (avec majuscule première lettre)
+    const modelFormatted = firstWord.charAt(0).toUpperCase() + firstWord.slice(1).toLowerCase();
+    params.set('u_car_model', `${vehicleData.brand.toUpperCase()}_${modelFormatted}`);
+  }
+
+  // Année : ± 2 ans
+  if (vehicleData.year) {
+    const yearMin = vehicleData.year - 2;
+    const yearMax = vehicleData.year + 2;
+    params.set('regdate', `${yearMin}-${yearMax}`);
+  }
+
+  // Kilométrage : ± 20 000 km
+  if (vehicleData.mileage) {
+    const kmMin = Math.max(0, vehicleData.mileage - 20000);
+    const kmMax = vehicleData.mileage + 20000;
+    params.set('mileage', `${kmMin}-${kmMax}`);
+  }
+
+  // Énergie
+  const fuelCode = mapEnergyToLeBonCoin(vehicleData.energyType);
+  if (fuelCode) {
+    params.set('fuel', fuelCode);
+  }
+
+  // Boîte de vitesse
+  const gearboxCode = mapGearboxToLeBonCoin(vehicleData.transmission);
+  if (gearboxCode) {
+    params.set('gearbox', gearboxCode);
+  }
+
+  // Trier par prix croissant
+  params.set('sort', 'price');
+  params.set('order', 'asc');
+
+  return `https://www.leboncoin.fr/recherche?${params.toString()}`;
+}
+
 // Construire l'URL LeBonCoin : catégorie voitures + texte + année + km + énergie + boîte
 function buildLeBonCoinUrl(vehicleData) {
   const params = new URLSearchParams();
@@ -582,6 +660,10 @@ function buildLeBonCoinUrl(vehicleData) {
   if (gearboxCode) {
     params.set('gearbox', gearboxCode);
   }
+
+  // Trier par prix croissant
+  params.set('sort', 'price');
+  params.set('order', 'asc');
 
   return `https://www.leboncoin.fr/recherche?${params.toString()}`;
 }
@@ -1315,6 +1397,7 @@ function showMarginModal(marginData, vehicleData) {
   const fees = calculateFees(marginData.alcopaPrice);
   const marginWithFees = marginData.avgMarketPrice - fees.total;
   const isPositiveWithFees = marginWithFees >= 0;
+  const topPrices = marginData.top10Prices || marginData.top5Prices || [];
 
   modal.innerHTML = `
     <div class="modal-content" style="position: relative; z-index: 10; width: 90%; max-width: 500px; background: white; border-radius: 12px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3); overflow: hidden; display: flex; flex-direction: column;">
@@ -1337,14 +1420,21 @@ function showMarginModal(marginData, vehicleData) {
             ${marginData.totalAds} annonces
           </div>
           <div style="font-size: 13px; color: #666; margin-top: 4px;">
-            ${marginData.pricesTab1} prix (onglet 1) + ${marginData.pricesTab2} prix (onglet 2)
+            ${marginData.pricesTab1} (onglet 1) + ${marginData.pricesTab2} (onglet 2) + ${marginData.pricesTab3 || 0} (onglet 3)
           </div>
+          ${marginData.url3 ? `
+          <div style="margin-top: 8px;">
+            <a href="${marginData.url3}" target="_blank" rel="noopener noreferrer" style="display: inline-block; padding: 6px 12px; background: #2196F3; color: white; text-decoration: none; border-radius: 4px; font-size: 12px; font-weight: 500;">
+              Voir sur LeBonCoin (Marque + Modèle)
+            </a>
+          </div>
+          ` : ''}
         </div>
 
         <div>
-          <h3 style="margin: 0 0 12px 0; font-size: 16px; font-weight: 600; color: #333;">Top 5 Prix</h3>
+          <h3 style="margin: 0 0 12px 0; font-size: 16px; font-weight: 600; color: #333;">Top ${topPrices.length} Prix</h3>
           <div style="display: flex; flex-direction: column; gap: 8px;">
-            ${marginData.top5Prices.map((price, i) => `
+            ${topPrices.map((price, i) => `
               <div style="display: flex; justify-content: space-between; padding: 10px 14px; background: #f5f5f5; border-radius: 6px;">
                 <span style="font-weight: 500; color: #666;">#${i + 1}</span>
                 <span style="font-weight: 600; color: #2196F3; font-size: 15px;">${formatPrice(price)}</span>
